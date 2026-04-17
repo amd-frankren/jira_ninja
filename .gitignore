@@ -1,0 +1,12 @@
+# Ignore SharePoint generated files
+sharepoint_remote_file_count.txt
+sharepoint_remote_file_list.txt
+
+
+# Local tool storage
+.cline_storage/
+
+__pycache__/
+SCET_export_runtime/
+rag_index_scet/
+.venv/

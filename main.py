@@ -1,0 +1,572 @@
+#!/usr/bin/env python3
+"""
+Main entrypoint:
+- Monitor Jira SCET project changes.
+- When created/updated Jira tickets are detected, export each ticket to JSON.
+- Upload exported JSON to SharePoint.
+
+
+python main.py --interval 60 --since-minutes 0 --disable-sharepoint-upload --debug-skip-target-scp-check --debug-treat-updated-as-created
+
+
+python main.py --interval 60 --since-minutes 60 --debug-skip-target-scp-check --debug-enable-add-comment
+
+
+"""
+
+import argparse
+import asyncio
+import html
+import json
+import os
+import re
+import shutil
+import sys
+import time
+
+from jira_scet_monitor import JiraScetMonitor
+from json_minify import minify_one_file
+from jira_add_comment import add_comment_to_jira
+from mcp_client import (
+    DEFAULT_MAX_TOKENS,
+    DEFAULT_MODEL,
+    ENV_LLM_GATEWAY_API_TOKEN,
+    ENV_LLM_GATEWAY_API_URL,
+    ENV_MCP_SERVER_URL_ATLASSIAN_INTERNAL,
+    parse_header_items,
+    run_chat_with_mcp,
+)
+from rag_scet_qa import ask_scet_rag
+from jira_export_external_scet import export_issue_to_file
+from sharepoint_upload_files import upload_fixed_target_file
+
+# Poll interval for Jira monitor (seconds)
+POLL_INTERVAL_SECONDS = 60
+DEFAULT_EXPORT_DIR = "SCET_export_runtime"
+# TARGET_SCP_IDS = ["SCP-835", "SCP-738", "SCP-865"]
+
+TARGET_SCP_IDS = ["SCP-835"]
+ENV_EXTERNAL_JIRA_URL = "EXTERNAL_JIRA_URL"
+
+
+def _exported_file_contains_target_scp(exported_file: str, targets: list[str] = TARGET_SCP_IDS) -> bool:
+    """Match any target SCP string directly in downloaded JSON file text."""
+    try:
+        # Open exported file for text read
+        with open(exported_file, "r", encoding="utf-8") as f:
+            # Read all text content
+            content = f.read()
+    except Exception:
+        return False
+
+    upper_content = content.upper()
+
+    # Extract all SCP IDs that appear in current ticket content (print even if no target matched)
+    ticket_scp_ids = sorted(set(re.findall(r"SCP-\d+", upper_content)))
+    print(f"[info] Current ticket SCP ID in {exported_file} is: {ticket_scp_ids if ticket_scp_ids else 'None'}")
+
+    # Case-insensitive substring match against target list
+    matched_scp_ids = [t.strip().upper() for t in targets if t.strip() and t.strip().upper() in upper_content]
+    print(f"[info] Matched target SCP IDs: {matched_scp_ids if matched_scp_ids else 'None'}")
+
+    return len(matched_scp_ids) > 0
+
+
+def _json_to_text(value) -> str:
+    """Flatten Jira-like JSON field value into plain text."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+
+    if isinstance(value, dict):
+        parts = []
+        for key in ("text", "value", "content"):
+            if key in value:
+                # Recursively extract nested text candidate
+                extracted = _json_to_text(value.get(key))
+                if extracted:
+                    parts.append(extracted)
+
+        if not parts:
+            for v in value.values():
+                # Recursively extract nested dict values
+                extracted = _json_to_text(v)
+                if extracted:
+                    parts.append(extracted)
+
+        # Join extracted pieces with line breaks
+        return "\n".join([p for p in parts if p]).strip()
+
+    if isinstance(value, list):
+        parts = []
+        for item in value:
+            # Recursively extract list item text
+            extracted = _json_to_text(item)
+            if extracted:
+                parts.append(extracted)
+        # Join extracted list text with line breaks
+        return "\n".join(parts).strip()
+
+    return ""
+
+
+def _html_to_plain_text(text: str) -> str:
+    """Convert HTML content to readable plain text."""
+    if not text:
+        return ""
+
+    # Replace <br> with newline
+    text = re.sub(r"(?i)<\s*br\s*/?\s*>", "\n", text)
+    # Replace block closing tags with newline
+    text = re.sub(r"(?i)</\s*(div|p|h1|h2|h3|h4|h5|h6|li|tr|section)\s*>", "\n", text)
+    # Replace list item opening with bullet prefix
+    text = re.sub(r"(?i)<\s*li[^>]*>", "- ", text)
+
+    # Remove remaining HTML tags
+    text = re.sub(r"<[^>]+>", "", text)
+
+    # Decode HTML entities
+    text = html.unescape(text)
+
+    # Normalize carriage returns
+    text = text.replace("\r", "")
+    # Normalize non-breaking spaces
+    text = text.replace("\u00a0", " ")
+    # Split lines and trim each line
+    lines = [ln.strip() for ln in text.split("\n")]
+    # Join non-empty lines
+    cleaned = "\n".join(ln for ln in lines if ln)
+    return cleaned.strip()
+
+
+def _clean_description_noise(description: str) -> str:
+    """
+    Remove known template/placeholder sections that are not useful for analysis.
+    """
+    if not description:
+        return ""
+
+    invalid_headers = {
+        "upload log(s):",
+        "failure rate:",
+        "mtbf:",
+        "system config and peripheral device information:",
+        "additional information",
+    }
+    valid_resume_headers = {
+        "issue description:",
+    }
+
+    cleaned_lines: list[str] = []
+    skipping = False
+
+    # Split description into lines
+    for raw_line in description.split("\n"):
+        # Trim current line
+        line = raw_line.strip()
+        # Normalize line to lowercase
+        lower = line.lower()
+
+        if lower in invalid_headers:
+            skipping = True
+            continue
+
+        if skipping:
+            if lower in valid_resume_headers:
+                skipping = False
+                cleaned_lines.append(line)
+            continue
+
+        # Skip placeholder prompt lines
+        if re.match(r"^\(please .*?\)$", line, flags=re.IGNORECASE):
+            continue
+
+        cleaned_lines.append(line)
+
+    compact: list[str] = []
+    prev_blank = False
+    for line in cleaned_lines:
+        blank = (line == "")
+        if blank and prev_blank:
+            continue
+        compact.append(line)
+        prev_blank = blank
+
+    # Join compacted lines
+    return "\n".join(compact).strip()
+
+
+def _extract_ticket_title_description(exported_file: str) -> tuple[str, str]:
+    """Read exported JSON and extract title(summary) + description."""
+    try:
+        # Open exported JSON file
+        with open(exported_file, "r", encoding="utf-8") as f:
+            # Parse JSON content
+            data = json.load(f)
+    except Exception:
+        return "", ""
+
+    if not isinstance(data, dict):
+        return "", ""
+
+    issue = data.get("issue", {}) if isinstance(data.get("issue"), dict) else {}
+    issue_fields = issue.get("fields", {}) if isinstance(issue.get("fields"), dict) else {}
+    versioned = (
+        issue.get("versionedRepresentations", {})
+        if isinstance(issue.get("versionedRepresentations"), dict)
+        else {}
+    )
+
+    def _first_non_empty(*candidates) -> str:
+        for v in candidates:
+            # Convert any candidate into text
+            text = _json_to_text(v)
+            if text:
+                return text
+        return ""
+
+    summary_vr = ""
+    if isinstance(versioned.get("summary"), dict):
+        # Extract summary from versioned field
+        summary_vr = _json_to_text(versioned["summary"].get("1"))
+
+    description_vr = ""
+    if isinstance(versioned.get("description"), dict):
+        # Extract description from versioned field
+        description_vr = _json_to_text(versioned["description"].get("1"))
+
+    # Pick first non-empty title candidate
+    title = _first_non_empty(
+        issue_fields.get("summary"),
+        summary_vr,
+        issue_fields.get("customfield_11801"),  # Ticket Summary
+        data.get("summary"),
+        data.get("title"),
+    )
+    # Pick first non-empty description candidate
+    description = _first_non_empty(
+        issue_fields.get("description"),
+        description_vr,
+        issue_fields.get("customfield_11900"),  # Ticket Description
+        data.get("description"),
+    )
+
+    # Convert title HTML to plain text
+    clean_title = _html_to_plain_text(title)
+    # Convert and clean description HTML/text noise
+    clean_description = _clean_description_noise(_html_to_plain_text(description))
+    return clean_title, clean_description
+
+
+def _build_answer_1_rag_output(ticket_text: str, issue_key: str) -> str:
+    """Build answer 1 based on historical SCET tickets (including source_details)."""
+    print(f"[debug] entered _build_answer_1_rag_output | issue_key={issue_key}")
+    # Run RAG Q&A for ticket analysis
+    rag_result = ask_scet_rag(question=ticket_text, mode="llm")
+    rag_answer = str(rag_result.get("answer", "")).strip()
+
+    sources = rag_result.get("sources", []) or []
+    current_issue_key = issue_key.upper()
+    filtered_sources = [
+        s
+        for s in sources
+        if str(s.get("issue_key", "")).strip().upper() != current_issue_key
+    ]
+
+    source_lines: list[str] = []
+    for s in filtered_sources:
+        ref = s.get("ref", "")
+        try:
+            display_ref = str(int(str(ref).strip()) - 1)
+        except Exception:
+            display_ref = str(ref)
+        s_url = str(s.get("issue_url", "")).strip() or "N/A"
+        s_score = s.get("score", 0.0)
+        try:
+            s_score_str = f"{float(s_score):.4f}"
+        except Exception:
+            s_score_str = str(s_score)
+        source_lines.append(
+            f"[{display_ref}] | {s_url} | score={s_score_str}"
+        )
+
+    # Join source details for answer 1
+    source_details = "\n".join(source_lines) if source_lines else "None"
+
+    answer_1_rag_output = (
+        f"{rag_answer or '(empty)'}\n\n"
+        f"Similar issues:\n{source_details}"
+    )
+    return answer_1_rag_output
+
+
+def _build_answer_2_mcp_output(ticket_text: str, issue_key: str) -> str:
+    print(f"[debug] entered _build_answer_2_mcp_output | issue_key={issue_key}")
+
+    mcp_server_url = ENV_MCP_SERVER_URL_ATLASSIAN_INTERNAL
+    if not mcp_server_url:
+        raise RuntimeError("Missing required environment variable: MCP_SERVER_URL_ATLASSIAN_INTERNAL")
+
+    mcp_auth_token = os.getenv("INTERNAL_JIRA_TOKEN", "").strip()
+    if not mcp_auth_token:
+        raise RuntimeError("Missing required environment variable: INTERNAL_JIRA_TOKEN")
+
+    headers = parse_header_items([])
+    headers["Authorization"] = f"Bearer {mcp_auth_token}"
+
+    print(f"[debug][mcp] issue_key: {issue_key}")
+    print(f"[debug][mcp] ticket_text:\n{ticket_text}")
+    
+
+    mcp_prompt = (
+        "Please analyze this issue in detail. "
+        "Also list the top 10 most relevant PLAT tickets (required).\n"
+        f"Ticket text:\n{ticket_text}"
+    )
+
+    answer_2_mcp_output = asyncio.run(
+        run_chat_with_mcp(
+            user_prompt=mcp_prompt,
+            mcp_server_url=mcp_server_url,
+            mcp_headers=headers,
+            model=DEFAULT_MODEL,
+            max_tokens=DEFAULT_MAX_TOKENS,
+            gateway_key=ENV_LLM_GATEWAY_API_TOKEN,
+            base_url=ENV_LLM_GATEWAY_API_URL,
+            llm_user=None,
+            max_tool_rounds=8,
+        )
+    )
+
+    return str(answer_2_mcp_output).strip() or "(empty)"
+
+
+def _build_final_answer(ticket_text: str, issue_key: str) -> str:
+    print(f"[debug] entered _build_final_answer | issue_key={issue_key}")
+
+    answer_1_rag_output = _build_answer_1_rag_output(ticket_text=ticket_text, issue_key=issue_key)
+    answer_2_mcp_output = _build_answer_2_mcp_output(ticket_text=ticket_text, issue_key=issue_key)
+
+    final_answer = (
+        "This comment was auto-generated by AI and is for reference only.\n"
+        "You will see two answers: one based on historical SCET tickets, "
+        "and one based on internal atlassian MCP service (historical PLAT tickets and Confluence).\n\n"
+        "1. Answer 1 (Based on historical SCET tickets): \n"
+        f"{answer_1_rag_output}\n\n"
+        "2. Answer 2 (Based on internal atlassian MCP service): \n"
+        f"{answer_2_mcp_output}"
+    )
+
+    return final_answer
+
+
+
+def parse_args() -> argparse.Namespace:
+    # Build CLI argument parser
+    parser = argparse.ArgumentParser(
+        description="Monitor SCET Jira changes, export changed ticket content, then upload to SharePoint."
+    )
+    parser.add_argument(
+        "--interval",
+        type=int,
+        default=POLL_INTERVAL_SECONDS,
+        help=f"Polling interval in seconds (default: {POLL_INTERVAL_SECONDS})",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=DEFAULT_EXPORT_DIR,
+        help=f"Local export directory for ticket JSON files (default: {DEFAULT_EXPORT_DIR})",
+    )
+    parser.add_argument(
+        "--since-minutes",
+        type=int,
+        default=0,
+        help="Initial look-back window in minutes for monitor mode (default: 0).",
+    )
+    parser.add_argument(
+        "--disable-sharepoint-upload",
+        action="store_true",
+        help="Disable uploading exported files to SharePoint (default: upload enabled).",
+    )
+    parser.add_argument(
+        "--debug-enable-add-comment",
+        action="store_true",
+        help="Debug option: enable posting internal comment to Jira (default: disabled).",
+    )
+    parser.add_argument(
+        "--debug-skip-target-scp-check",
+        action="store_true",
+        help="Debug option: skip TARGET_SCP_IDS check and treat every ticket as SCP-matched.",
+    )
+    parser.add_argument(
+        "--debug-treat-updated-as-created",
+        action="store_true",
+        help="Debug option: treat UPDATED events as CREATED events.",
+    )
+    # Parse CLI arguments
+    return parser.parse_args()
+
+
+def main() -> int:
+    # Parse runtime arguments
+    args = parse_args()
+
+    try:
+        # ===== Monitor mode =====
+        # Clamp poll interval to at least 1 second
+        poll_interval_seconds = max(args.interval, 1)
+        # Initialize Jira monitor
+        monitor = JiraScetMonitor(
+            poll_interval_seconds=poll_interval_seconds,
+        )
+
+        if args.since_minutes > 0:
+            # Import datetime tools for checkpoint rollback
+            from datetime import datetime, timedelta, timezone
+
+            # Roll back monitor checkpoint for look-back window
+            monitor.last_checked = datetime.now(timezone.utc) - timedelta(minutes=args.since_minutes)
+
+        # Print export directory info
+        print(f"[info] Export output dir: {args.output_dir}")
+
+        while True:
+            # Poll Jira change events
+            events = monitor.poll_changes()
+            if events:
+                # Print number of detected changes
+                print(f"[info] Detected {len(events)} Jira change(s), export+upload for each ticket.")
+                for ev in events:
+                    # Read issue key from event
+                    issue_key = ev.get("issue_key", "").strip()
+                    # Read summary from event
+                    summary = ev.get("summary", "").strip()
+                    # Read event type from event
+                    event_type = ev.get("event_type", "updated").strip()
+
+                    if args.debug_treat_updated_as_created and event_type.lower() == "updated":
+                        print("[info] Debug enabled: treat UPDATED event as CREATED.")
+                        event_type = "created"
+
+                    # Read issue URL from event
+                    issue_url = ev.get("issue_url", "").strip()
+
+                    # Print event summary line
+                    print(f"[event] {event_type.upper()} {issue_key} - {summary} | {issue_url}")
+
+                    if not issue_key:
+                        # Print warning for invalid event data
+                        print("[warn] Empty issue_key in event, skipped.", file=sys.stderr)
+                        continue
+
+                    try:
+                        # Export issue JSON file to local directory
+                        exported_file = export_issue_to_file(
+                            issue_key=issue_key,
+                            output_dir=args.output_dir,
+                        )
+                        # Print exported file path
+                        print(f"[info] Exported: {exported_file}")
+
+                        # Minify exported JSON in place
+                        src_size, minified_size = minify_one_file(exported_file, exported_file)
+                        ratio = (minified_size / src_size * 100) if src_size else 0.0
+                        # Print minify result
+                        print(
+                            f"[info] Minified: {exported_file} "
+                            f"({src_size} -> {minified_size} bytes, {ratio:.2f}%)"
+                        )
+
+                        if args.debug_skip_target_scp_check:
+                            print("[info] Debug skip enabled: bypass TARGET_SCP_IDS check for this ticket.")
+
+                        if (
+                            event_type.lower() == "created"
+                            and (
+                                args.debug_skip_target_scp_check
+                                or _exported_file_contains_target_scp(exported_file)
+                            )
+                        ):
+                            # Extract ticket title and description from exported JSON
+                            ticket_title, ticket_desc = _extract_ticket_title_description(exported_file)
+                            # Print SCP alert
+                            print(
+                                f"[alert] Found one of target SCP IDs {TARGET_SCP_IDS} in exported JSON | "
+                                f"issue={issue_key} | event={event_type.upper()}"
+                            )
+                            ticket_text = (
+                                f"Title: {ticket_title or '(empty)'}\n"
+                                f"Description: {ticket_desc or '(empty)'}"
+                            )
+
+                            # Print extracted ticket text
+                            print(f"[alert] Ticket text:\n{ticket_text}")
+
+                            try:
+                                # Build RAG output text for potential Jira internal comment
+                                final_answer = _build_final_answer(ticket_text=ticket_text, issue_key=issue_key)
+                                # Print RAG output
+                                print(f"[alert][rag] Answer:\n{final_answer}")
+
+                                if args.debug_enable_add_comment:
+                                    try:
+                                        # Post internal comment to Jira
+                                        add_comment_to_jira(
+                                            issue_key=issue_key,
+                                            body=final_answer,
+                                        )
+                                        # Print comment success
+                                        print(f"[info] Internal AI comment posted to {issue_key}.")
+                                    except Exception as comment_exc:
+                                        # Print comment failure warning
+                                        print(
+                                            f"[warn] Failed to post internal AI comment for {issue_key}: {comment_exc}",
+                                            file=sys.stderr,
+                                        )
+                                else:
+                                    # Print skip message when comment posting is disabled
+                                    print("[info] Skip posting internal AI comment (debug flag not enabled).")
+                            except Exception as rag_exc:
+                                # Print RAG failure warning
+                                print(
+                                    f"[warn] rag_scet_qa call failed for {issue_key}: {rag_exc}",
+                                    file=sys.stderr,
+                                )
+
+                        if args.disable_sharepoint_upload:
+                            # Print skip upload message
+                            print(
+                                f"[info] SharePoint upload disabled by flag, skip upload for {issue_key}."
+                            )
+                        else:
+                            # Upload processed file to SharePoint
+                            upload_fixed_target_file(exported_file, delete_local_after_upload=False)
+                    except Exception as ticket_exc:
+                        # Print per-ticket failure
+                        print(
+                            f"[error] Failed processing ticket {issue_key}: {ticket_exc}",
+                            file=sys.stderr,
+                        )
+            else:
+                # Print no-change message
+                print("[info] No Jira changes.")
+
+            # Sleep until next poll cycle
+            time.sleep(poll_interval_seconds)
+
+    except KeyboardInterrupt:
+        # Print exit info on Ctrl+C
+        print("\n[info] Exiting by user interrupt.")
+        return 0
+    except Exception as exc:
+        # Print fatal error
+        print(f"[error] {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    # Run program entrypoint
+    raise SystemExit(main())
