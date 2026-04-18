@@ -52,6 +52,7 @@ DRIVE_NAME = "Documents"
 #REMOTE_FOLDER = "SCETS/SCET_export_minified"
 REMOTE_FOLDER = "SCETS/test_auto"
 FAILED_UPLOAD_LOG_FILE = "sharepoint_failed_uploads.log"
+SINGLE_FILE_FAILED_UPLOAD_LOG_FILE = "log/sharepoint_upload_failed.log"
 
 
 def eprint(*args, **kwargs):
@@ -211,6 +212,8 @@ def write_failed_uploads_log(
 ) -> Path:
     """Write failed upload file list to a local log file."""
     log_path = Path(log_file).expanduser().resolve()
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
     lines = ["# SharePoint upload failed files", ""]
     for file_path, err_msg in failed_items:
         lines.append(f"- {file_path}")
@@ -253,17 +256,23 @@ def upload_fixed_target_file(file_path: str, delete_local_after_upload: bool = F
     Upload a local file to fixed SharePoint target configured by constants:
     HOSTNAME / SITE_PATH / DRIVE_NAME / REMOTE_FOLDER.
 
+    Retry policy for single-file upload:
+    - If an upload attempt fails, refresh token and retry that same file.
+    - If the same file fails 3 times, skip this file and write failure log to:
+      log/sharepoint_upload_failed.log
+
     Args:
         file_path: Local file path to upload.
         delete_local_after_upload: Whether to delete local file after successful upload.
             Default is False (keep local file).
 
-    Returns Graph response JSON (dict).
+    Returns Graph response JSON (dict). Returns empty dict when file upload
+    finally fails after all retries.
     """
     start_ts = time.perf_counter()
     local_file = Path(file_path).expanduser().resolve()
-    token = get_access_token()
 
+    token = get_access_token()
     site_id = resolve_site_id(token, HOSTNAME, SITE_PATH)
     print(f"[info] Resolved site-id: {site_id}")
 
@@ -271,24 +280,68 @@ def upload_fixed_target_file(file_path: str, delete_local_after_upload: bool = F
     print(f"[info] Resolved drive-id: {drive_id}")
 
     remote_item_path = build_remote_item_path(local_file, REMOTE_FOLDER)
-    result = upload_file_content(token, drive_id, local_file, remote_item_path)
+    max_retries = 3
 
-    elapsed = time.perf_counter() - start_ts
-    print("[ok] Upload succeeded.")
-    print(f"[ok] Item ID: {result.get('id')}")
-    print(f"[ok] Size: {result.get('size')}")
-    print(f"[ok] Web URL: {result.get('webUrl')}")
-
-    if delete_local_after_upload:
+    for attempt in range(1, max_retries + 1):
         try:
-            if local_file.exists():
-                local_file.unlink()
-                print(f"[info] Local file deleted after upload: {local_file}")
-        except Exception as del_exc:
-            print(f"[warn] Uploaded but failed to delete local file {local_file}: {del_exc}", file=sys.stderr)
+            result = upload_file_content(token, drive_id, local_file, remote_item_path)
 
-    print(f"[ok] Total elapsed: {elapsed:.2f}s")
-    return result
+            elapsed = time.perf_counter() - start_ts
+            print("[ok] Upload succeeded.")
+            print(f"[ok] Item ID: {result.get('id')}")
+            print(f"[ok] Size: {result.get('size')}")
+            print(f"[ok] Web URL: {result.get('webUrl')}")
+
+            if delete_local_after_upload:
+                try:
+                    if local_file.exists():
+                        local_file.unlink()
+                        print(f"[info] Local file deleted after upload: {local_file}")
+                except Exception as del_exc:
+                    print(
+                        f"[warn] Uploaded but failed to delete local file {local_file}: {del_exc}",
+                        file=sys.stderr,
+                    )
+
+            print(f"[ok] Total elapsed: {elapsed:.2f}s")
+            return result
+        except Exception as exc:
+            err_msg = str(exc)
+            print(
+                f"[error] Upload failed (attempt {attempt}/{max_retries}): "
+                f"{local_file} -> {remote_item_path}"
+            )
+            print(f"[error] Reason: {err_msg}")
+
+            if attempt >= max_retries:
+                log_path = write_failed_uploads_log(
+                    failed_items=[(local_file, err_msg)],
+                    log_file=SINGLE_FILE_FAILED_UPLOAD_LOG_FILE,
+                )
+                print(
+                    f"[error] Upload skipped after {max_retries} failed attempts: {local_file}. "
+                    f"Failed log written to: {log_path}",
+                    file=sys.stderr,
+                )
+                return {}
+
+            try:
+                token = get_access_token()
+                print("[info] Token refreshed for retry.")
+            except Exception as token_exc:
+                combined_err = f"{err_msg} | token refresh failed: {token_exc}"
+                log_path = write_failed_uploads_log(
+                    failed_items=[(local_file, combined_err)],
+                    log_file=SINGLE_FILE_FAILED_UPLOAD_LOG_FILE,
+                )
+                print(
+                    f"[error] Upload skipped because token refresh failed: {local_file}. "
+                    f"Failed log written to: {log_path}",
+                    file=sys.stderr,
+                )
+                return {}
+
+    return {}
 
 
 def upload_fixed_target_folder(
