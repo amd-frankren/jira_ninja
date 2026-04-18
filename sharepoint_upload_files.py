@@ -54,6 +54,10 @@ REMOTE_FOLDER = "SCETS/test_auto"
 FAILED_UPLOAD_LOG_FILE = "sharepoint_failed_uploads.log"
 SINGLE_FILE_FAILED_UPLOAD_LOG_FILE = "log/sharepoint_upload_failed.log"
 
+# Runtime cache for resolved SharePoint IDs (process-level)
+CACHED_SITE_ID: Optional[str] = None
+CACHED_DRIVE_ID: Optional[str] = None
+
 
 def eprint(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
@@ -206,6 +210,29 @@ def build_remote_item_path_from_relative(relative_file: Path, remote_folder: Opt
     return f"{remote_folder}/{relative_posix}" if remote_folder else relative_posix
 
 
+def resolve_cached_site_drive_ids(token: str, force_refresh: bool = False) -> Tuple[str, str]:
+    """
+    Resolve (or reuse cached) site-id and drive-id.
+
+    Cache policy:
+    - First successful resolve is cached in process memory.
+    - Subsequent calls reuse cached IDs.
+    - If force_refresh=True, refresh IDs from Graph and overwrite cache.
+    """
+    global CACHED_SITE_ID, CACHED_DRIVE_ID
+
+    if not force_refresh and CACHED_SITE_ID and CACHED_DRIVE_ID:
+        return CACHED_SITE_ID, CACHED_DRIVE_ID
+
+    site_id = resolve_site_id(token, HOSTNAME, SITE_PATH)
+    drive_id = resolve_drive_id(token, site_id, DRIVE_NAME)
+
+    CACHED_SITE_ID = site_id
+    CACHED_DRIVE_ID = drive_id
+
+    return site_id, drive_id
+
+
 def write_failed_uploads_log(
     failed_items: List[Tuple[Path, str]],
     log_file: str = FAILED_UPLOAD_LOG_FILE,
@@ -273,10 +300,8 @@ def upload_fixed_target_file(file_path: str, delete_local_after_upload: bool = F
     local_file = Path(file_path).expanduser().resolve()
 
     token = get_access_token()
-    site_id = resolve_site_id(token, HOSTNAME, SITE_PATH)
+    site_id, drive_id = resolve_cached_site_drive_ids(token, force_refresh=False)
     print(f"[info] Resolved site-id: {site_id}")
-
-    drive_id = resolve_drive_id(token, site_id, DRIVE_NAME)
     print(f"[info] Resolved drive-id: {drive_id}")
 
     remote_item_path = build_remote_item_path(local_file, REMOTE_FOLDER)
@@ -327,15 +352,18 @@ def upload_fixed_target_file(file_path: str, delete_local_after_upload: bool = F
 
             try:
                 token = get_access_token()
+                site_id, drive_id = resolve_cached_site_drive_ids(token, force_refresh=True)
                 print("[info] Token refreshed for retry.")
+                print(f"[info] Refreshed site-id: {site_id}")
+                print(f"[info] Refreshed drive-id: {drive_id}")
             except Exception as token_exc:
-                combined_err = f"{err_msg} | token refresh failed: {token_exc}"
+                combined_err = f"{err_msg} | token/site/drive refresh failed: {token_exc}"
                 log_path = write_failed_uploads_log(
                     failed_items=[(local_file, combined_err)],
                     log_file=SINGLE_FILE_FAILED_UPLOAD_LOG_FILE,
                 )
                 print(
-                    f"[error] Upload skipped because token refresh failed: {local_file}. "
+                    f"[error] Upload skipped because token/site/drive refresh failed: {local_file}. "
                     f"Failed log written to: {log_path}",
                     file=sys.stderr,
                 )
@@ -369,10 +397,8 @@ def upload_fixed_target_folder(
 
     token = get_access_token()
 
-    site_id = resolve_site_id(token, HOSTNAME, SITE_PATH)
+    site_id, drive_id = resolve_cached_site_drive_ids(token, force_refresh=False)
     print(f"[info] Resolved site-id: {site_id}")
-
-    drive_id = resolve_drive_id(token, site_id, DRIVE_NAME)
     print(f"[info] Resolved drive-id: {drive_id}")
 
     print(f"[info] Found {len(files)} files under: {local_folder}")
@@ -424,15 +450,18 @@ def upload_fixed_target_folder(
                         f"{max_retries_per_file} times. Failed list logged at: {log_path}"
                     ) from exc
 
-                # Refresh token before retrying the same file
+                # Refresh token + site/drive ids before retrying the same file
                 try:
                     token = get_access_token()
+                    site_id, drive_id = resolve_cached_site_drive_ids(token, force_refresh=True)
                     print("[info] Token refreshed for retry.")
+                    print(f"[info] Refreshed site-id: {site_id}")
+                    print(f"[info] Refreshed drive-id: {drive_id}")
                 except Exception as token_exc:
-                    failed_items.append((relative_file, f"{err_msg} | token refresh failed: {token_exc}"))
+                    failed_items.append((relative_file, f"{err_msg} | token/site/drive refresh failed: {token_exc}"))
                     log_path = write_failed_uploads_log(failed_items)
                     raise RuntimeError(
-                        f"Upload aborted: failed to refresh token after upload failure "
+                        f"Upload aborted: failed to refresh token/site/drive after upload failure "
                         f"for file {relative_file}. Failed list logged at: {log_path}"
                     ) from token_exc
 
