@@ -33,6 +33,13 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from urllib import error, parse, request
 
 from jira_export_external_scet import export_issue_to_file
+from jira_export_internal_plat import (
+    ENV_INTERNAL_JIRA_TOKEN,
+    ENV_PLAT_PROJECT_ISSUES_URL,
+    fetch_issue_data as fetch_plat_issue_data,
+    parse_project_issues_url,
+    save_json as save_plat_json,
+)
 from json_minify import minify_one_file
 from sharepoint_upload_files import (
     graph_request,
@@ -56,26 +63,63 @@ DEFAULT_MAIN_ARGS: List[str] = [
 ]
 
 # Reconcile constants
-JIRA_PROJECT_KEY = "SCET"
+SCET_PROJECT_KEY = "SCET"
+PLAT_PROJECT_KEY = "PLAT"
 JIRA_SEARCH_API = "/rest/api/2/search"
 ENV_EXTERNAL_JIRA_URL = "EXTERNAL_JIRA_URL"
 ENV_EXTERNAL_JIRA_TOKEN = "EXTERNAL_JIRA_TOKEN"
-RECONCILE_REMOTE_FOLDER = "SCETS/SCET_export_minified"
+
+RECONCILE_REMOTE_FOLDER_SCET = "SCETS/SCET_export_minified"
+RECONCILE_REMOTE_FOLDER_PLAT = "SCETS/PLAT_export_minified"
 
 LOG_DIR = Path("log")
+
 JIRA_SCET_COUNT_FILE = LOG_DIR / "jira_scet_ticket_count.txt"
 JIRA_SCET_LIST_FILE = LOG_DIR / "jira_scet_ticket_numbers.txt"
 SHAREPOINT_SCET_COUNT_FILE = LOG_DIR / "sharepoint_scet_file_count.txt"
 SHAREPOINT_SCET_LIST_FILE = LOG_DIR / "sharepoint_scet_numbers.txt"
 MISSING_SCET_LIST_FILE = LOG_DIR / "sharepoint_missing_scet_numbers.txt"
-SHAREPOINT_DELTA_STATE_FILE = LOG_DIR / "sharepoint_scet_delta_state.json"
+SHAREPOINT_SCET_DELTA_STATE_FILE = LOG_DIR / "sharepoint_scet_delta_state.json"
 MISSING_SCET_SYNC_LOG_FILE = LOG_DIR / "sharepoint_missing_scet_upload_results.txt"
 MISSING_SCET_EXPORT_DIR = Path("SCET_export_runtime")
 
+JIRA_PLAT_COUNT_FILE = LOG_DIR / "jira_plat_ticket_count.txt"
+JIRA_PLAT_LIST_FILE = LOG_DIR / "jira_plat_ticket_numbers.txt"
+SHAREPOINT_PLAT_COUNT_FILE = LOG_DIR / "sharepoint_plat_file_count.txt"
+SHAREPOINT_PLAT_LIST_FILE = LOG_DIR / "sharepoint_plat_numbers.txt"
+MISSING_PLAT_LIST_FILE = LOG_DIR / "sharepoint_missing_plat_numbers.txt"
+SHAREPOINT_PLAT_DELTA_STATE_FILE = LOG_DIR / "sharepoint_plat_delta_state.json"
+MISSING_PLAT_SYNC_LOG_FILE = LOG_DIR / "sharepoint_missing_plat_upload_results.txt"
+MISSING_PLAT_EXPORT_DIR = Path("PLAT_export_runtime")
+
+
+def _extract_project_number(text: str, project_key: str) -> Optional[str]:
+    p = project_key.strip().upper()
+    if not p:
+        return None
+    m = re.search(rf"\b{re.escape(p)}-\d+\b", text.upper())
+    return m.group(0) if m else None
+
 
 def _extract_scet_number(text: str) -> Optional[str]:
-    m = re.search(r"\bSCET-\d+\b", text.upper())
-    return m.group(0) if m else None
+    return _extract_project_number(text, SCET_PROJECT_KEY)
+
+
+def _resolve_plat_project_key() -> str:
+    project_issues_url = os.getenv(ENV_PLAT_PROJECT_ISSUES_URL, "").strip()
+    if project_issues_url:
+        try:
+            parsed = parse_project_issues_url(project_issues_url)
+            key = str(parsed.get("project_key", "")).strip().upper()
+            if key:
+                return key
+        except Exception:
+            pass
+    return PLAT_PROJECT_KEY
+
+
+def _extract_plat_number(text: str) -> Optional[str]:
+    return _extract_project_number(text, _resolve_plat_project_key())
 
 
 def _scet_sort_key(scet: str) -> Tuple[int, str]:
@@ -235,10 +279,25 @@ def _jira_get_json(base_url: str, token: str, params: Dict[str, Any]) -> Dict[st
         raise RuntimeError(f"Invalid JSON response from Jira API at {url}") from json_err
 
 
-def _fetch_all_jira_scet_numbers(
-    log_fn,
-    should_stop: Optional[Callable[[], bool]] = None,
-) -> List[str]:
+def _resolve_jira_conn_for_project(project_key: str) -> Tuple[str, str]:
+    project_upper = project_key.strip().upper()
+
+    if project_upper == PLAT_PROJECT_KEY:
+        token = os.getenv(ENV_INTERNAL_JIRA_TOKEN, "").strip()
+        if not token:
+            raise RuntimeError(f"Missing required env var: {ENV_INTERNAL_JIRA_TOKEN}")
+
+        project_issues_url = os.getenv(ENV_PLAT_PROJECT_ISSUES_URL, "").strip()
+        if not project_issues_url:
+            raise RuntimeError(f"Missing required env var: {ENV_PLAT_PROJECT_ISSUES_URL}")
+
+        parsed = parse_project_issues_url(project_issues_url)
+        base_url = str(parsed.get("base_url", "")).strip()
+        if not base_url:
+            raise RuntimeError(f"Cannot parse base_url from env var: {ENV_PLAT_PROJECT_ISSUES_URL}")
+
+        return base_url, token
+
     base_url = os.getenv(ENV_EXTERNAL_JIRA_URL, "").strip()
     if not base_url:
         raise RuntimeError(f"Missing required env var: {ENV_EXTERNAL_JIRA_URL}")
@@ -247,19 +306,31 @@ def _fetch_all_jira_scet_numbers(
     if not token:
         raise RuntimeError(f"Missing required env var: {ENV_EXTERNAL_JIRA_TOKEN}")
 
-    max_results = 100
+    return base_url, token
+
+
+def _fetch_all_jira_project_numbers(
+    project_key: str,
+    extract_fn: Callable[[str], Optional[str]],
+    log_fn,
+    should_stop: Optional[Callable[[], bool]] = None,
+) -> List[str]:
+    project_upper = project_key.strip().upper()
+    base_url, token = _resolve_jira_conn_for_project(project_upper)
+
+    max_results = 5000
     start_at = 0
     page = 0
     total: Optional[int] = None
-    scet_numbers: Set[str] = set()
+    ticket_numbers: Set[str] = set()
 
     while True:
         if should_stop and should_stop():
-            log_fn("[reconcile][jira] interrupted by stop signal, abort paging.")
+            log_fn(f"[reconcile][jira][{project_upper}] interrupted by stop signal, abort paging.")
             raise RuntimeError("Reconcile interrupted by stop signal")
         page += 1
         params = {
-            "jql": f"project = {JIRA_PROJECT_KEY} ORDER BY key ASC",
+            "jql": f"project = {project_upper} ORDER BY key ASC",
             "fields": "key",
             "maxResults": str(max_results),
             "startAt": str(start_at),
@@ -275,20 +346,20 @@ def _fetch_all_jira_scet_numbers(
                 total = int(data.get("total", 0))
             except Exception:
                 total = 0
-            log_fn(f"[reconcile][jira] total tickets reported by API: {total}")
+            log_fn(f"[reconcile][jira][{project_upper}] total tickets reported by API: {total}")
 
         for issue in issues:
             if not isinstance(issue, dict):
                 continue
             key = str(issue.get("key", "")).strip().upper()
-            scet = _extract_scet_number(key)
-            if scet:
-                scet_numbers.add(scet)
+            ticket = extract_fn(key)
+            if ticket:
+                ticket_numbers.add(ticket)
 
         fetched = start_at + len(issues)
         pct = (fetched / total * 100.0) if total and total > 0 else 100.0
         log_fn(
-            f"[reconcile][jira] page={page}, startAt={start_at}, "
+            f"[reconcile][jira][{project_upper}] page={page}, startAt={start_at}, "
             f"fetched_this_page={len(issues)}, fetched_total={fetched}/{total or 0} ({pct:.2f}%)"
         )
 
@@ -297,21 +368,47 @@ def _fetch_all_jira_scet_numbers(
 
         start_at += max_results
 
-    result = sorted(scet_numbers, key=_scet_sort_key)
-    log_fn(f"[reconcile][jira] final unique SCET count: {len(result)}")
+    result = sorted(ticket_numbers, key=_scet_sort_key)
+    log_fn(f"[reconcile][jira][{project_upper}] final unique count: {len(result)}")
     return result
+
+
+def _fetch_all_jira_scet_numbers(
+    log_fn,
+    should_stop: Optional[Callable[[], bool]] = None,
+) -> List[str]:
+    return _fetch_all_jira_project_numbers(
+        project_key=SCET_PROJECT_KEY,
+        extract_fn=_extract_scet_number,
+        log_fn=log_fn,
+        should_stop=should_stop,
+    )
+
+
+def _fetch_all_jira_plat_numbers(
+    log_fn,
+    should_stop: Optional[Callable[[], bool]] = None,
+) -> List[str]:
+    plat_project_key = _resolve_plat_project_key()
+    return _fetch_all_jira_project_numbers(
+        project_key=plat_project_key,
+        extract_fn=lambda text: _extract_project_number(text, plat_project_key),
+        log_fn=log_fn,
+        should_stop=should_stop,
+    )
 
 
 def _upload_local_file_to_sharepoint_reconcile_folder(
     local_file: Path,
     token: str,
     drive_id: str,
+    remote_folder: str,
 ) -> Dict[str, Any]:
     if not local_file.exists() or not local_file.is_file():
         raise RuntimeError(f"Local file does not exist or is not a file: {local_file}")
 
-    remote_folder = RECONCILE_REMOTE_FOLDER.strip().strip("/")
-    remote_item_path = f"{remote_folder}/{local_file.name}" if remote_folder else local_file.name
+    normalized_folder = remote_folder.strip().strip("/")
+    remote_item_path = f"{normalized_folder}/{local_file.name}" if normalized_folder else local_file.name
     encoded_path = parse.quote(remote_item_path, safe="/")
     endpoint = f"/drives/{drive_id}/root:/{encoded_path}:/content"
 
@@ -328,47 +425,70 @@ def _upload_local_file_to_sharepoint_reconcile_folder(
     return data
 
 
-def _sync_missing_scet_to_sharepoint(
+def _export_plat_issue_to_file(issue_key: str, output_dir: Path) -> str:
+    token = os.getenv(ENV_INTERNAL_JIRA_TOKEN, "").strip()
+    if not token:
+        raise RuntimeError(f"Missing environment variable: {ENV_INTERNAL_JIRA_TOKEN}")
+
+    project_issues_url = os.getenv(ENV_PLAT_PROJECT_ISSUES_URL, "").strip()
+    if not project_issues_url:
+        raise RuntimeError(f"Missing required environment variable: {ENV_PLAT_PROJECT_ISSUES_URL}")
+
+    parsed = parse_project_issues_url(project_issues_url)
+    base_url = parsed["base_url"]
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    data = fetch_plat_issue_data(base_url, issue_key, token, timeout=60)
+    out_file = output_dir / f"{issue_key}.json"
+    save_plat_json(str(out_file), data)
+    return str(out_file)
+
+
+def _sync_missing_project_to_sharepoint(
     missing_on_sharepoint: List[str],
+    project_key: str,
+    remote_folder: str,
+    export_dir: Path,
+    sync_log_file: Path,
+    export_fn: Callable[[str], str],
     log_fn,
     should_stop: Optional[Callable[[], bool]] = None,
 ) -> None:
+    project = project_key.strip().upper()
     if not missing_on_sharepoint:
-        log_fn("[reconcile][sync] no missing SCET on SharePoint, skip sync.")
+        log_fn(f"[reconcile][sync][{project}] no missing tickets on SharePoint, skip sync.")
         return
 
     token = get_access_token()
     _site_id, drive_id = resolve_cached_site_drive_ids(token, force_refresh=False)
 
-    MISSING_SCET_EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+    export_dir.mkdir(parents=True, exist_ok=True)
 
     success_count = 0
     failed_count = 0
     lines: List[str] = []
     run_ts = time.strftime("%Y-%m-%d %H:%M:%S")
-    lines.append(f"=== missing SCET sync run @ {run_ts} ===")
+    lines.append(f"=== missing {project} sync run @ {run_ts} ===")
     lines.append(f"missing_count={len(missing_on_sharepoint)}")
 
-    for idx, scet_key in enumerate(missing_on_sharepoint, start=1):
+    for idx, ticket in enumerate(missing_on_sharepoint, start=1):
         if should_stop and should_stop():
-            raise RuntimeError("Missing SCET sync interrupted by stop signal")
+            raise RuntimeError(f"Missing {project} sync interrupted by stop signal")
 
         step_begin = time.perf_counter()
-        issue_key = scet_key.strip().upper()
+        issue_key = ticket.strip().upper()
         if not issue_key:
             continue
 
         try:
-            exported_file = export_issue_to_file(
-                issue_key=issue_key,
-                output_dir=str(MISSING_SCET_EXPORT_DIR),
-            )
+            exported_file = export_fn(issue_key)
 
             src_size, minified_size = minify_one_file(exported_file, exported_file)
             upload_result = _upload_local_file_to_sharepoint_reconcile_folder(
                 local_file=Path(exported_file),
                 token=token,
                 drive_id=drive_id,
+                remote_folder=remote_folder,
             )
             elapsed = time.perf_counter() - step_begin
 
@@ -377,7 +497,7 @@ def _sync_missing_scet_to_sharepoint(
             success_count += 1
 
             log_fn(
-                f"[reconcile][sync] ({idx}/{len(missing_on_sharepoint)}) uploaded {issue_key} "
+                f"[reconcile][sync][{project}] ({idx}/{len(missing_on_sharepoint)}) uploaded {issue_key} "
                 f"ok | minify={src_size}->{minified_size} bytes | elapsed={elapsed:.2f}s"
             )
             lines.append(
@@ -388,7 +508,7 @@ def _sync_missing_scet_to_sharepoint(
         except Exception as exc:
             failed_count += 1
             log_fn(
-                f"[reconcile][sync][error] ({idx}/{len(missing_on_sharepoint)}) "
+                f"[reconcile][sync][{project}][error] ({idx}/{len(missing_on_sharepoint)}) "
                 f"issue={issue_key} failed: {exc}"
             )
             lines.append(f"[FAILED] issue={issue_key} reason={exc}")
@@ -396,24 +516,65 @@ def _sync_missing_scet_to_sharepoint(
     lines.append(f"result: success={success_count}, failed={failed_count}")
     lines.append("")
 
-    MISSING_SCET_SYNC_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with MISSING_SCET_SYNC_LOG_FILE.open("a", encoding="utf-8") as f:
+    sync_log_file.parent.mkdir(parents=True, exist_ok=True)
+    with sync_log_file.open("a", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
 
     log_fn(
-        f"[reconcile][sync] missing SCET sync done: success={success_count}, failed={failed_count}, "
-        f"log={MISSING_SCET_SYNC_LOG_FILE}"
+        f"[reconcile][sync][{project}] done: success={success_count}, failed={failed_count}, "
+        f"log={sync_log_file}"
     )
 
 
-def _fetch_sharepoint_scet_numbers_non_recursive(
+def _sync_missing_scet_to_sharepoint(
+    missing_on_sharepoint: List[str],
+    log_fn,
+    should_stop: Optional[Callable[[], bool]] = None,
+) -> None:
+    _sync_missing_project_to_sharepoint(
+        missing_on_sharepoint=missing_on_sharepoint,
+        project_key=SCET_PROJECT_KEY,
+        remote_folder=RECONCILE_REMOTE_FOLDER_SCET,
+        export_dir=MISSING_SCET_EXPORT_DIR,
+        sync_log_file=MISSING_SCET_SYNC_LOG_FILE,
+        export_fn=lambda issue_key: export_issue_to_file(
+            issue_key=issue_key,
+            output_dir=str(MISSING_SCET_EXPORT_DIR),
+        ),
+        log_fn=log_fn,
+        should_stop=should_stop,
+    )
+
+
+def _sync_missing_plat_to_sharepoint(
+    missing_on_sharepoint: List[str],
+    log_fn,
+    should_stop: Optional[Callable[[], bool]] = None,
+) -> None:
+    _sync_missing_project_to_sharepoint(
+        missing_on_sharepoint=missing_on_sharepoint,
+        project_key=_resolve_plat_project_key(),
+        remote_folder=RECONCILE_REMOTE_FOLDER_PLAT,
+        export_dir=MISSING_PLAT_EXPORT_DIR,
+        sync_log_file=MISSING_PLAT_SYNC_LOG_FILE,
+        export_fn=lambda issue_key: _export_plat_issue_to_file(issue_key, MISSING_PLAT_EXPORT_DIR),
+        log_fn=log_fn,
+        should_stop=should_stop,
+    )
+
+
+def _fetch_sharepoint_project_numbers_non_recursive(
+    project_key: str,
+    remote_folder: str,
+    delta_state_file: Path,
+    extract_fn: Callable[[str], Optional[str]],
     log_fn,
     should_stop: Optional[Callable[[], bool]] = None,
 ) -> Tuple[List[str], int]:
     token = get_access_token()
     _site_id, drive_id = resolve_cached_site_drive_ids(token, force_refresh=False)
 
-    normalized_folder = RECONCILE_REMOTE_FOLDER.strip().strip("/")
+    normalized_folder = remote_folder.strip().strip("/")
     if normalized_folder:
         encoded_folder = parse.quote(normalized_folder, safe="/")
         full_sync_endpoint = (
@@ -429,11 +590,12 @@ def _fetch_sharepoint_scet_numbers_non_recursive(
         expected_parent_path = f"/drives/{drive_id}/root:"
 
     state = _load_sharepoint_delta_state(
-        SHAREPOINT_DELTA_STATE_FILE,
+        delta_state_file,
         remote_folder=normalized_folder,
     )
     files_by_id: Dict[str, str] = dict(state.get("files_by_id", {}))
     cached_delta_link = state.get("delta_link")
+    project = project_key.strip().upper()
 
     def _run_delta_once(start_endpoint: str) -> Tuple[str, int, int, int]:
         page = 0
@@ -445,7 +607,7 @@ def _fetch_sharepoint_scet_numbers_non_recursive(
 
         while next_endpoint:
             if should_stop and should_stop():
-                log_fn("[reconcile][sharepoint] interrupted by stop signal, abort paging.")
+                log_fn(f"[reconcile][sharepoint][{project}] interrupted by stop signal, abort paging.")
                 raise RuntimeError("Reconcile interrupted by stop signal")
 
             page += 1
@@ -467,7 +629,7 @@ def _fetch_sharepoint_scet_numbers_non_recursive(
             removed_total += removed
 
             log_fn(
-                f"[reconcile][sharepoint][delta] page={page}, "
+                f"[reconcile][sharepoint][{project}][delta] page={page}, "
                 f"delta_items={len(items)}, added_or_updated={added_or_updated}, removed={removed}, "
                 f"tracked_files={len(files_by_id)}"
             )
@@ -477,7 +639,7 @@ def _fetch_sharepoint_scet_numbers_non_recursive(
 
             if isinstance(next_link, str) and next_link.strip():
                 next_endpoint = next_link.strip()
-                log_fn("[reconcile][sharepoint][delta] next page detected, continue fetching...")
+                log_fn(f"[reconcile][sharepoint][{project}][delta] next page detected, continue fetching...")
             else:
                 next_endpoint = None
 
@@ -492,42 +654,71 @@ def _fetch_sharepoint_scet_numbers_non_recursive(
     using_incremental = isinstance(cached_delta_link, str) and bool(cached_delta_link.strip())
 
     if using_incremental:
-        log_fn("[reconcile][sharepoint][delta] using cached deltaLink (incremental sync).")
+        log_fn(f"[reconcile][sharepoint][{project}][delta] using cached deltaLink (incremental sync).")
         try:
             delta_link, pages, scanned_items, change_count = _run_delta_once(cached_delta_link.strip())
         except Exception as exc:
             log_fn(
-                f"[reconcile][sharepoint][delta][warn] incremental sync failed, "
+                f"[reconcile][sharepoint][{project}][delta][warn] incremental sync failed, "
                 f"fallback to full delta sync: {exc}"
             )
             files_by_id = {}
             delta_link, pages, scanned_items, change_count = _run_delta_once(full_sync_endpoint)
     else:
-        log_fn("[reconcile][sharepoint][delta] no cached deltaLink, running initial full delta sync.")
+        log_fn(f"[reconcile][sharepoint][{project}][delta] no cached deltaLink, running initial full delta sync.")
         files_by_id = {}
         delta_link, pages, scanned_items, change_count = _run_delta_once(full_sync_endpoint)
 
     _save_sharepoint_delta_state(
-        SHAREPOINT_DELTA_STATE_FILE,
+        delta_state_file,
         remote_folder=normalized_folder,
         delta_link=delta_link,
         files_by_id=files_by_id,
     )
 
     names = sorted(files_by_id.values())
-    scet_numbers: Set[str] = set()
+    ticket_numbers: Set[str] = set()
     for name in names:
-        scet = _extract_scet_number(name)
-        if scet:
-            scet_numbers.add(scet)
+        ticket = extract_fn(name)
+        if ticket:
+            ticket_numbers.add(ticket)
 
-    result = sorted(scet_numbers, key=_scet_sort_key)
+    result = sorted(ticket_numbers, key=_scet_sort_key)
     log_fn(
-        f"[reconcile][sharepoint] delta sync done: pages={pages}, scanned_delta_items={scanned_items}, "
+        f"[reconcile][sharepoint][{project}] delta sync done: pages={pages}, scanned_delta_items={scanned_items}, "
         f"applied_changes={change_count}, tracked_files={len(files_by_id)}, "
-        f"unique_scet={len(result)}, state_file={SHAREPOINT_DELTA_STATE_FILE}"
+        f"unique_count={len(result)}, state_file={delta_state_file}"
     )
     return result, len(files_by_id)
+
+
+def _fetch_sharepoint_scet_numbers_non_recursive(
+    log_fn,
+    should_stop: Optional[Callable[[], bool]] = None,
+) -> Tuple[List[str], int]:
+    return _fetch_sharepoint_project_numbers_non_recursive(
+        project_key=SCET_PROJECT_KEY,
+        remote_folder=RECONCILE_REMOTE_FOLDER_SCET,
+        delta_state_file=SHAREPOINT_SCET_DELTA_STATE_FILE,
+        extract_fn=_extract_scet_number,
+        log_fn=log_fn,
+        should_stop=should_stop,
+    )
+
+
+def _fetch_sharepoint_plat_numbers_non_recursive(
+    log_fn,
+    should_stop: Optional[Callable[[], bool]] = None,
+) -> Tuple[List[str], int]:
+    plat_project_key = _resolve_plat_project_key()
+    return _fetch_sharepoint_project_numbers_non_recursive(
+        project_key=plat_project_key,
+        remote_folder=RECONCILE_REMOTE_FOLDER_PLAT,
+        delta_state_file=SHAREPOINT_PLAT_DELTA_STATE_FILE,
+        extract_fn=lambda text: _extract_project_number(text, plat_project_key),
+        log_fn=log_fn,
+        should_stop=should_stop,
+    )
 
 
 class MainSupervisor:
@@ -540,6 +731,7 @@ class MainSupervisor:
         script_args: Optional[List[str]] = None,
         reconcile_interval_hours: float = 8.0,
         start_main_py: bool = True,
+        reconcile_projects: str = "all",
     ) -> None:
         self.target_script = target_script
         self.check_interval = check_interval
@@ -552,6 +744,7 @@ class MainSupervisor:
         self._running = True
         self._signal_count = 0
         self.start_main_py = start_main_py
+        self.reconcile_projects = reconcile_projects.strip().lower()
 
         self.reconcile_interval_seconds = max(reconcile_interval_hours * 3600.0, 60.0)
         self._next_reconcile_at = time.time()  # run once immediately, then every interval
@@ -600,7 +793,7 @@ class MainSupervisor:
         os._exit(130)
 
     def _run_scet_reconcile(self) -> None:
-        self._log("[reconcile] start SCET Jira vs SharePoint reconciliation")
+        self._log("[reconcile][SCET] start Jira vs SharePoint reconciliation")
 
         jira_scet_numbers = _fetch_all_jira_scet_numbers(
             self._log,
@@ -609,7 +802,7 @@ class MainSupervisor:
         _write_count_file(JIRA_SCET_COUNT_FILE, len(jira_scet_numbers))
         _write_list_file(JIRA_SCET_LIST_FILE, jira_scet_numbers)
         self._log(
-            f"[reconcile] Jira outputs written: {JIRA_SCET_COUNT_FILE}, {JIRA_SCET_LIST_FILE}"
+            f"[reconcile][SCET] Jira outputs written: {JIRA_SCET_COUNT_FILE}, {JIRA_SCET_LIST_FILE}"
         )
 
         sp_scet_numbers, sp_file_count = _fetch_sharepoint_scet_numbers_non_recursive(
@@ -619,7 +812,7 @@ class MainSupervisor:
         _write_count_file(SHAREPOINT_SCET_COUNT_FILE, sp_file_count)
         _write_list_file(SHAREPOINT_SCET_LIST_FILE, sp_scet_numbers)
         self._log(
-            f"[reconcile] SharePoint outputs written: "
+            f"[reconcile][SCET] SharePoint outputs written: "
             f"{SHAREPOINT_SCET_COUNT_FILE}, {SHAREPOINT_SCET_LIST_FILE}"
         )
 
@@ -629,21 +822,66 @@ class MainSupervisor:
 
         _write_list_file(MISSING_SCET_LIST_FILE, missing_on_sharepoint)
         self._log(
-            f"[reconcile] compare done: jira={len(jira_set)}, sharepoint={len(sp_set)}, "
+            f"[reconcile][SCET] compare done: jira={len(jira_set)}, sharepoint={len(sp_set)}, "
             f"missing_on_sharepoint={len(missing_on_sharepoint)}"
         )
-        self._log(f"[reconcile] missing list written: {MISSING_SCET_LIST_FILE}")
+        self._log(f"[reconcile][SCET] missing list written: {MISSING_SCET_LIST_FILE}")
 
         _sync_missing_scet_to_sharepoint(
             missing_on_sharepoint=missing_on_sharepoint,
             log_fn=self._log,
             should_stop=lambda: not self._running,
         )
-        self._log("[reconcile] finished")
+        self._log("[reconcile][SCET] finished")
+
+    def _run_plat_reconcile(self) -> None:
+        self._log("[reconcile][PLAT] start Jira vs SharePoint reconciliation")
+
+        jira_plat_numbers = _fetch_all_jira_plat_numbers(
+            self._log,
+            should_stop=lambda: not self._running,
+        )
+        _write_count_file(JIRA_PLAT_COUNT_FILE, len(jira_plat_numbers))
+        _write_list_file(JIRA_PLAT_LIST_FILE, jira_plat_numbers)
+        self._log(
+            f"[reconcile][PLAT] Jira outputs written: {JIRA_PLAT_COUNT_FILE}, {JIRA_PLAT_LIST_FILE}"
+        )
+
+        sp_plat_numbers, sp_file_count = _fetch_sharepoint_plat_numbers_non_recursive(
+            self._log,
+            should_stop=lambda: not self._running,
+        )
+        _write_count_file(SHAREPOINT_PLAT_COUNT_FILE, sp_file_count)
+        _write_list_file(SHAREPOINT_PLAT_LIST_FILE, sp_plat_numbers)
+        self._log(
+            f"[reconcile][PLAT] SharePoint outputs written: "
+            f"{SHAREPOINT_PLAT_COUNT_FILE}, {SHAREPOINT_PLAT_LIST_FILE}"
+        )
+
+        jira_set = set(jira_plat_numbers)
+        sp_set = set(sp_plat_numbers)
+        missing_on_sharepoint = sorted(jira_set - sp_set, key=_scet_sort_key)
+
+        _write_list_file(MISSING_PLAT_LIST_FILE, missing_on_sharepoint)
+        self._log(
+            f"[reconcile][PLAT] compare done: jira={len(jira_set)}, sharepoint={len(sp_set)}, "
+            f"missing_on_sharepoint={len(missing_on_sharepoint)}"
+        )
+        self._log(f"[reconcile][PLAT] missing list written: {MISSING_PLAT_LIST_FILE}")
+
+        _sync_missing_plat_to_sharepoint(
+            missing_on_sharepoint=missing_on_sharepoint,
+            log_fn=self._log,
+            should_stop=lambda: not self._running,
+        )
+        self._log("[reconcile][PLAT] finished")
 
     def _run_scet_reconcile_safe(self) -> None:
         try:
-            self._run_scet_reconcile()
+            if self.reconcile_projects in ("all", "scet"):
+                self._run_scet_reconcile()
+            if self.reconcile_projects in ("all", "plat"):
+                self._run_plat_reconcile()
         except Exception as exc:
             self._log(f"[reconcile][error] {exc}")
 
@@ -657,7 +895,8 @@ class MainSupervisor:
 
         self._log("[info] supervisor started")
         self._log(
-            f"[info] SCET reconcile enabled, interval={self.reconcile_interval_seconds / 3600.0:.2f}h"
+            f"[info] reconcile enabled, projects={self.reconcile_projects}, "
+            f"interval={self.reconcile_interval_seconds / 3600.0:.2f}h"
         )
         if self.start_main_py:
             self._start_child()
@@ -741,6 +980,12 @@ def parse_args() -> argparse.Namespace:
         help="Do not start main.py child process; run supervisor reconcile loop only.",
     )
     parser.add_argument(
+        "--reconcile-projects",
+        choices=["all", "scet", "plat"],
+        default="all",
+        help="Select reconcile target projects: all (default), scet, or plat.",
+    )
+    parser.add_argument(
         "script_args",
         nargs=argparse.REMAINDER,
         help="Extra arguments passed to target script. Use '--' before extra args.",
@@ -774,6 +1019,7 @@ def main() -> int:
         script_args=child_args,
         reconcile_interval_hours=args.reconcile_interval_hours,
         start_main_py=not args.disable_main_py_start,
+        reconcile_projects=args.reconcile_projects,
     )
     return supervisor.run()
 
