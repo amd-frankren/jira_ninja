@@ -6,3 +6,4 @@ SCET_export_runtime/
 rag_index_scet/
 .venv/
 jira_ninja.env
+log/
