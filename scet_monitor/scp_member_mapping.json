@@ -6,7 +6,8 @@
         "role": "CPM",
         "responsibilities": [
           "Project manager"
-        ]
+        ],
+        "username": "egao"
       },
       {
         "email": "Hunk.Cui@amd.com",
@@ -16,14 +17,16 @@
           "UEFI",
           "APCI",
           "OS"
-        ]
+        ],
+        "username": "hcui"
       },
       {
         "email": "Josh.Ji@amd.com",
         "role": "Hardware",
         "responsibilities": [
           "Hardware"
-        ]
+        ],
+        "username": "joshji12"
       },
       {
         "email": "Frank.Ren@amd.com",
@@ -32,7 +35,8 @@
           "BMC",
           "APML",
           "MCTP"
-        ]
+        ],
+        "username": "frankren"
       }
     ]
   }

@@ -5,16 +5,12 @@
 Assign Jira ticket to an owner, then add an internal visibility comment.
 
 Reusable API:
-- assign_ticket_and_notify(ticket_url, assignee, cpm_email, ...)
+- assign_ticket_and_notify(ticket_url, assignee, cpm_name, ...)
 
 CLI usage:
-python jira_assign_and_notify.py \
-  --ticket-url "https://ontrack.amd.com/browse/SCET-12345" \
-  --assignee "frank.ren@amd.com" \
-  --cpm "eric.gao@amd.com"
 
 
-python jira_assign_and_notify.py --ticket-url https://ontrack.amd.com/browse/SCET-22716 --assignee Josh.Ji@amd.com --cpm Eric.Gao@amd.com
+python jira_assign_and_notify.py --ticket-url https://ontrack.amd.com/browse/SCET-22716 --assignee frankren --cpm ericgao
 
 Behavior:
 1) Parse issue key from ticket URL
@@ -110,12 +106,10 @@ def _extract_issue_key(ticket_url_or_key: str) -> str:
     return m.group(1) if m else ""
 
 
-def _extract_mention_name(email_or_user: str) -> str:
-    s = (email_or_user or "").strip()
+def _extract_mention_name(user_name: str) -> str:
+    s = (user_name or "").strip()
     if not s:
         return "owner"
-    if "@" in s:
-        return s.split("@", 1)[0]
     return s
 
 
@@ -141,12 +135,11 @@ def _resolve_account_id_by_query(base_url: str, token: str, assignee: str, timeo
             if not isinstance(u, dict):
                 continue
             account_id = str(u.get("accountId", "")).strip()
-            email = str(u.get("emailAddress", "")).strip().lower()
             name = str(u.get("name", "")).strip().lower()
             key = str(u.get("key", "")).strip().lower()
 
             a = assignee.strip().lower()
-            if a and (a == email or a == name or a == key):
+            if a and (a == name or a == key):
                 if account_id:
                     return account_id
 
@@ -204,20 +197,24 @@ def assign_issue(
     raise RuntimeError(f"Failed to assign issue {safe_issue} to {safe_assignee}. Last error: {last_error}")
 
 
-def build_assign_notice_comment(assignee: str, cpm_email: str) -> str:
+def build_assign_notice_comment(assignee: str, cpm_name: str) -> str:
     mention = _extract_mention_name(assignee)
-    safe_cpm = (cpm_email or "").strip() or "cpm@amd.com"
+    safe_cpm = (cpm_name or "").strip() or "cpm"
+    # Jira does not parse plain "@username" as a real mention in comment body.
+    # For Jira Server/Data Center wiki renderer, [~username] is the mention syntax.
+    jira_mention = f"[~{mention}]"
     return (
-        f"Hi @{mention}, this ticket is assigned by AI. "
-        f"If this issue does not belong to you, please assign this ticket to CPM {safe_cpm} "
-        f"or assign it to the correct module owner."
+        f"Hi {jira_mention},\n\n"
+        f"This ticket is assigned by AI. "
+        f"If it does not belong to you, please reassign it to CPM {safe_cpm} "
+        f"or the appropriate module owner."
     )
 
 
 def assign_ticket_and_notify(
     ticket_url: str,
     assignee: str,
-    cpm_email: str,
+    cpm_name: str,
     visibility_role: str = DEFAULT_VISIBILITY_ROLE,
     token: str = "",
     timeout: int = 60,
@@ -233,7 +230,7 @@ def assign_ticket_and_notify(
         timeout=timeout,
     )
 
-    comment_body = build_assign_notice_comment(assignee=assignee, cpm_email=cpm_email)
+    comment_body = build_assign_notice_comment(assignee=assignee, cpm_name=cpm_name)
     comment_result = add_comment_to_jira(
         issue_key=issue_key,
         body=comment_body,
@@ -245,7 +242,7 @@ def assign_ticket_and_notify(
         "issue_key": issue_key,
         "ticket_url": ticket_url.strip(),
         "assignee": assignee.strip(),
-        "cpm_email": cpm_email.strip(),
+        "cpm_name": cpm_name.strip(),
         "assign_result": assign_result,
         "comment_visibility_role": visibility_role,
         "comment_result": comment_result,
@@ -255,8 +252,8 @@ def assign_ticket_and_notify(
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Assign Jira ticket and add internal notify comment")
     p.add_argument("--ticket-url", required=True, help="Ticket URL or issue key (e.g. SCET-12345)")
-    p.add_argument("--assignee", required=True, help="Assignee user/email")
-    p.add_argument("--cpm", required=True, help="Project CPM email")
+    p.add_argument("--assignee", required=True, help="Assignee Jira username")
+    p.add_argument("--cpm", required=True, help="Project CPM name")
     p.add_argument("--visibility-role", default=DEFAULT_VISIBILITY_ROLE, help="Comment visibility role")
     p.add_argument("--token", default="", help="Bearer token (optional; read from env if omitted)")
     p.add_argument("--timeout", type=int, default=60, help="HTTP timeout seconds")
@@ -271,7 +268,7 @@ def main() -> int:
         result = assign_ticket_and_notify(
             ticket_url=args.ticket_url,
             assignee=args.assignee,
-            cpm_email=args.cpm,
+            cpm_name=args.cpm,
             visibility_role=args.visibility_role,
             token=args.token,
             timeout=max(args.timeout, 1),
