@@ -3,10 +3,9 @@
 Main entrypoint:
 - Monitor Jira SCET project changes.
 - When created/updated Jira tickets are detected, export each ticket to JSON.
-- Upload exported JSON to SharePoint.
 
 
-python main.py --interval 60 --since-minutes 0 --disable-sharepoint-upload --debug-skip-target-scp-check --debug-treat-updated-as-created
+python main.py --interval 60 --since-minutes 0 --debug-skip-target-scp-check --debug-treat-updated-as-created
 
 
 python main.py --interval 60 --since-minutes 60 --debug-skip-target-scp-check --debug-enable-add-comment
@@ -38,7 +37,6 @@ from mcp_client import (
 )
 from rag_scet_qa import ask_scet_rag
 from jira_export_external_scet import export_issue_to_file
-from sharepoint_upload_files import upload_fixed_target_file
 
 # Poll interval for Jira monitor (seconds)
 POLL_INTERVAL_SECONDS = 60
@@ -367,7 +365,7 @@ def _build_final_answer(ticket_text: str, issue_key: str) -> str:
 def parse_args() -> argparse.Namespace:
     # Build CLI argument parser
     parser = argparse.ArgumentParser(
-        description="Monitor SCET Jira changes, export changed ticket content, then upload to SharePoint."
+        description="Monitor SCET Jira changes and export changed ticket content."
     )
     parser.add_argument(
         "--interval",
@@ -385,11 +383,6 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=0,
         help="Initial look-back window in minutes for monitor mode (default: 0).",
-    )
-    parser.add_argument(
-        "--disable-sharepoint-upload",
-        action="store_true",
-        help="Disable uploading exported files to SharePoint (default: upload enabled).",
     )
     parser.add_argument(
         "--debug-enable-add-comment",
@@ -438,7 +431,7 @@ def main() -> int:
             events = monitor.poll_changes()
             if events:
                 # Print number of detected changes
-                print(f"[info] Detected {len(events)} Jira change(s), export+upload for each ticket.")
+                print(f"[info] Detected {len(events)} Jira change(s), export for each ticket.")
                 for ev in events:
                     # Read issue key from event
                     issue_key = ev.get("issue_key", "").strip()
@@ -536,14 +529,6 @@ def main() -> int:
                                     file=sys.stderr,
                                 )
 
-                        if args.disable_sharepoint_upload:
-                            # Print skip upload message
-                            print(
-                                f"[info] SharePoint upload disabled by flag, skip upload for {issue_key}."
-                            )
-                        else:
-                            # Upload processed file to SharePoint
-                            upload_fixed_target_file(exported_file, delete_local_after_upload=False)
                     except Exception as ticket_exc:
                         # Print per-ticket failure
                         print(
