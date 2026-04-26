@@ -29,6 +29,7 @@ from jira_add_comment import add_comment_to_jira
 
 
 from jira_export_external_scet import export_issue_to_file
+from mcp_qa import ask_mcp_qa
 
 
 
@@ -383,8 +384,19 @@ def main() -> int:
                             print(f"[alert] Ticket text:\n{ticket_text}")
 
                             try:
-                               
-                                final_answer = "xxx"
+                                print(f"[info] Calling mcp_qa with ticket URL: {issue_url or '(empty)'}")
+                                qa_result = ask_mcp_qa(
+                                    ticket_url=issue_url,
+                                    question=ticket_text,
+                                )
+
+                                print(f"[info] qa_result: {qa_result or '(empty)'}")
+                                if qa_result.pending_question:
+                                    pending_q = qa_result.pending_question.get("question", "")
+                                    final_answer = f"AI 需要补充信息后才能继续分析：{pending_q}"
+                                else:
+                                    final_answer = qa_result.answer or "(empty answer from mcp_qa)"
+
                                 if args.debug_enable_add_comment:
                                     try:
                                         # Post internal comment to Jira
