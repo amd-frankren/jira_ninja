@@ -22,6 +22,7 @@ import re
 import shutil
 import sys
 import time
+from typing import Any, Dict, List, Optional, Tuple
 
 from jira_scet_monitor import JiraScetMonitor
 from jira_add_comment import add_comment_to_jira
@@ -29,13 +30,45 @@ from jira_add_comment import add_comment_to_jira
 
 from jira_export_external_scet import export_issue_to_file
 
+try:
+    from mcp import ClientSession
+except ImportError:
+    try:
+        from mcp.client.session import ClientSession  # type: ignore
+    except ImportError:
+        ClientSession = None  # type: ignore
+
+try:
+    from mcp.client.streamable_http import streamablehttp_client
+except ImportError:
+    try:
+        from mcp.client.streamable_http import streamable_http_client as streamablehttp_client  # type: ignore
+    except ImportError:
+        streamablehttp_client = None  # type: ignore
+
 # Poll interval for Jira monitor (seconds)
 POLL_INTERVAL_SECONDS = 60
 DEFAULT_EXPORT_DIR = "SCET_export_runtime"
+DEFAULT_AI_ANSWER_DIR = "SCET_ai_answers"
 # TARGET_SCP_IDS = ["SCP-835", "SCP-738", "SCP-865"]
 
 TARGET_SCP_IDS = ["SCP-835"]
 ENV_EXTERNAL_JIRA_URL = "EXTERNAL_JIRA_URL"
+ENV_SCET_MCP_URL = "SCET_MCP_URL"
+ENV_SCET_MCP_AUTH_TOKEN = "SCET_MCP_AUTH_TOKEN"
+ENV_JIRA_INTERNAL_MCP_URL = "JIRA_INTERNAL_MCP_URL"
+ENV_JIRA_INTERNAL_MCP_AUTH_TOKEN = "JIRA_INTERNAL_MCP_AUTH_TOKEN"
+
+MCP_SERVERS: Dict[str, Dict[str, str]] = {
+    "jira_external": {
+        "url": os.getenv(ENV_SCET_MCP_URL, "http://127.0.0.1:8000/mcp"),
+        "auth_token": os.getenv(ENV_SCET_MCP_AUTH_TOKEN, ""),
+    },
+    "jira_internal": {
+        "url": os.getenv(ENV_JIRA_INTERNAL_MCP_URL, "http://127.0.0.1:8002/mcp"),
+        "auth_token": os.getenv(ENV_JIRA_INTERNAL_MCP_AUTH_TOKEN, ""),
+    },
+}
 
 
 def _exported_file_contains_target_scp(exported_file: str, targets: list[str] = TARGET_SCP_IDS) -> bool:
@@ -251,7 +284,386 @@ def _extract_ticket_title_description(exported_file: str) -> tuple[str, str]:
     return clean_title, clean_description
 
 
+def _extract_mcp_tools(list_tools_result: Any) -> List[Any]:
+    tools = getattr(list_tools_result, "tools", None)
+    if tools is None and isinstance(list_tools_result, dict):
+        tools = list_tools_result.get("tools")
+    if not tools:
+        return []
+    return list(tools)
 
+
+def _tool_name(tool: Any) -> str:
+    if isinstance(tool, dict):
+        return str(tool.get("name", "")).strip()
+    return str(getattr(tool, "name", "")).strip()
+
+
+def _tool_schema(tool: Any) -> Dict[str, Any]:
+    if isinstance(tool, dict):
+        schema = tool.get("inputSchema") or tool.get("input_schema")
+    else:
+        schema = getattr(tool, "inputSchema", None) or getattr(tool, "input_schema", None)
+    if isinstance(schema, dict):
+        return schema
+    return {"type": "object", "properties": {}}
+
+
+def _mcp_result_to_text(result: Any) -> str:
+    parts: List[str] = []
+
+    content = getattr(result, "content", None)
+    if content is None and isinstance(result, dict):
+        content = result.get("content")
+
+    if isinstance(content, list):
+        for item in content:
+            if isinstance(item, dict):
+                txt = item.get("text")
+                if txt:
+                    parts.append(str(txt))
+                else:
+                    parts.append(json.dumps(item, ensure_ascii=False))
+            else:
+                txt = getattr(item, "text", None)
+                if txt:
+                    parts.append(str(txt))
+                else:
+                    parts.append(str(item))
+    elif isinstance(content, str):
+        parts.append(content)
+
+    structured = getattr(result, "structuredContent", None)
+    if structured is None and isinstance(result, dict):
+        structured = result.get("structuredContent")
+    if structured:
+        parts.append(json.dumps(structured, ensure_ascii=False, indent=2))
+
+    if parts:
+        return "\n".join(parts).strip()
+
+    try:
+        if hasattr(result, "model_dump"):
+            return json.dumps(result.model_dump(), ensure_ascii=False, indent=2)
+        if isinstance(result, dict):
+            return json.dumps(result, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+    return str(result)
+
+
+def _pick_mcp_analysis_tool(tools: List[Any]) -> Optional[Any]:
+    """
+    Pick analysis-oriented tool first.
+    Avoid pure retrieval tools like get_issue/jira_get_issue when possible.
+    """
+    by_name: Dict[str, Any] = {}
+    for t in tools:
+        name = _tool_name(t)
+        if name:
+            by_name[name] = t
+
+    preferred_order = [
+        "analyze_ticket",
+        "analyze_issue",
+        "ticket_analysis",
+        "issue_analysis",
+        "rag_scet_qa",
+        "ask_ticket",
+        "ask_issue",
+        "qa_ticket",
+        "qa_issue",
+    ]
+    for name in preferred_order:
+        if name in by_name:
+            return by_name[name]
+
+    # 2) fuzzy prefer analysis-like names
+    for t in tools:
+        lname = _tool_name(t).lower()
+        if any(k in lname for k in ("analy", "rag", "qa", "recommend", "suggest", "diagnos")):
+            return t
+
+    # 3) fallback to retrieval tools only as last resort
+    for name in ("jira_get_issue", "get_issue"):
+        if name in by_name:
+            return by_name[name]
+
+    for t in tools:
+        lname = _tool_name(t).lower()
+        if "issue" in lname or "ticket" in lname:
+            return t
+
+    return None
+
+
+def _build_tool_args(schema: Dict[str, Any], issue_key: str, ticket_text: str) -> Dict[str, Any]:
+    properties = schema.get("properties", {}) if isinstance(schema, dict) else {}
+    if not isinstance(properties, dict):
+        properties = {}
+
+    args: Dict[str, Any] = {}
+    for key in properties.keys():
+        lk = str(key).lower()
+        if lk in {"issue_key", "issue", "key", "ticket_key", "ticket_id", "id"}:
+            args[key] = issue_key
+        elif lk in {"text", "content", "description", "prompt", "query", "ticket_text"}:
+            args[key] = ticket_text
+
+    if args:
+        return args
+
+    return {"issue_key": issue_key}
+
+
+async def _call_mcp_server_for_analysis(
+    server_name: str,
+    server_cfg: Dict[str, str],
+    issue_key: str,
+    ticket_text: str,
+) -> str:
+    mcp_url = (server_cfg.get("url") or "").strip()
+    auth_token = (server_cfg.get("auth_token") or "").strip()
+    if not mcp_url:
+        raise RuntimeError(f"{server_name} MCP URL is empty")
+
+    headers: Dict[str, str] = {}
+    if auth_token:
+        headers["Authorization"] = f"Bearer {auth_token}"
+
+    transport_kwargs: Dict[str, Any] = {}
+    if headers:
+        transport_kwargs["headers"] = headers
+
+    from contextlib import AsyncExitStack
+
+    async with AsyncExitStack() as stack:
+        streams = await stack.enter_async_context(streamablehttp_client(mcp_url, **transport_kwargs))
+        if not (isinstance(streams, (list, tuple)) and len(streams) >= 2):
+            raise RuntimeError("Unexpected streamable-http transport return value")
+        read_stream, write_stream = streams[0], streams[1]
+
+        session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
+        await session.initialize()
+
+        list_tools_result = await session.list_tools()
+        tools = _extract_mcp_tools(list_tools_result)
+        if not tools:
+            raise RuntimeError(f"No MCP tools available from {server_name}")
+
+        picked_tool = _pick_mcp_analysis_tool(tools)
+        if picked_tool is None:
+            raise RuntimeError(f"No suitable MCP analysis tool found in {server_name}")
+
+        name = _tool_name(picked_tool)
+        schema = _tool_schema(picked_tool)
+        args = _build_tool_args(schema, issue_key=issue_key, ticket_text=ticket_text)
+
+        try:
+            result = await session.call_tool(name, arguments=args)
+            return _mcp_result_to_text(result)
+        except Exception:
+            fallback_args_list = [
+                {"issue_key": issue_key},
+                {"key": issue_key},
+                {"issue": issue_key},
+                {"ticket_key": issue_key},
+                {"id": issue_key},
+                {"issue_key": issue_key, "text": ticket_text},
+            ]
+            last_exc: Optional[Exception] = None
+            for fa in fallback_args_list:
+                try:
+                    result = await session.call_tool(name, arguments=fa)
+                    return _mcp_result_to_text(result)
+                except Exception as exc:
+                    last_exc = exc
+            raise RuntimeError(
+                f"MCP tool '{name}' on {server_name} failed with all argument variants: {last_exc}"
+            )
+
+
+async def _analyze_ticket_via_mcp(issue_key: str, ticket_text: str) -> str:
+    if ClientSession is None or streamablehttp_client is None:
+        return "MCP client dependency not available in current environment."
+
+    route_order = ("jira_external", "jira_internal")
+    last_err: Optional[str] = None
+
+    for server_name in route_order:
+        cfg = MCP_SERVERS.get(server_name)
+        if not cfg:
+            continue
+        try:
+            result = await _call_mcp_server_for_analysis(
+                server_name=server_name,
+                server_cfg=cfg,
+                issue_key=issue_key,
+                ticket_text=ticket_text,
+            )
+            return f"[server={server_name}]\n{result}"
+        except Exception as exc:
+            last_err = str(exc)
+
+    return f"MCP analysis failed on all configured servers. Last error: {last_err or 'unknown error'}"
+
+
+def _run_ticket_analysis_via_mcp(issue_key: str, ticket_text: str) -> str:
+    try:
+        return asyncio.run(_analyze_ticket_via_mcp(issue_key=issue_key, ticket_text=ticket_text))
+    except Exception as exc:
+        return f"MCP analysis failed: {exc}"
+
+
+def _build_mcp_analysis_prompt(issue_key: str, ticket_text: str) -> str:
+    """Build a structured prompt to request cause analysis, next steps, and top-10 similar tickets."""
+    return (
+        "你是资深 Jira 工单分析助手。请基于以下 ticket 内容，输出中文分析结果。\n"
+        "请严格包含以下三个部分：\n"
+        "1) 原因分析（Root Cause Analysis）\n"
+        "2) 下一步建议（可执行、按优先级排序）\n"
+        "3) 相似度最高的10条 ticket 供参考\n"
+        "   - 每条请包含：ticket key、相似原因、可借鉴点。\n"
+        "【重要】不要原样返回 ticket 原始 JSON，不要仅返回字段转储。\n"
+        "请输出可读的分析结论；若缺少数据，请先说明缺失项，再给临时建议。\n\n"
+        f"Issue Key: {issue_key}\n"
+        "Ticket Content:\n"
+        f"{ticket_text}\n"
+    )
+
+
+def _looks_like_raw_ticket_dump(text: str) -> bool:
+    """Detect MCP returning raw issue payload instead of analysis."""
+    if not text:
+        return True
+
+    stripped = text.strip()
+    # quick path for obvious raw payload
+    if '"summary"' in stripped and '"description"' in stripped and '"comments"' in stripped:
+        return True
+
+    candidate = stripped
+    try:
+        obj = json.loads(candidate)
+    except Exception:
+        return False
+
+    if isinstance(obj, dict):
+        # direct issue payload
+        if {"id", "key", "summary"}.issubset(set(obj.keys())):
+            return True
+        # wrapped payload
+        nested = obj.get("result")
+        if isinstance(nested, str):
+            try:
+                nested_obj = json.loads(nested)
+                if isinstance(nested_obj, dict) and {"id", "key", "summary"}.issubset(set(nested_obj.keys())):
+                    return True
+            except Exception:
+                pass
+
+    return False
+
+
+def _build_local_fallback_analysis(issue_key: str, ticket_text: str) -> str:
+    """
+    Build a local readable analysis when MCP returns raw payload only.
+    This guarantees stable output format for debug and Jira comment draft.
+    """
+    return (
+        "【原因分析】\n"
+        f"- 当前 MCP 返回结果主要是工单原始字段而非分析结论（issue={issue_key}）。\n"
+        "- 从 ticket 文本看，问题集中在 RO off 场景下 PCIe 带宽受限，可能与流控更新节奏/credit 消耗相关。\n"
+        "- 现有讨论提到 C&R patch 可显著改善带宽，但引入了读延迟上升风险，需要分场景验证。\n\n"
+        "【下一步建议（优先级）】\n"
+        "1. 先固定测试矩阵：平台版本、BIOS/patch 版本、RO on/off、流量模型，统一复现实验口径。\n"
+        "2. 同步采集证据：PCIe trace、PM log、关键寄存器快照，分别对比 patch 前后。\n"
+        "3. 将“带宽提升”与“延迟变差”拆成两个子问题，分别定义准出标准。\n"
+        "4. 明确 owner 与时间点：补丁版本、正式发布计划、A0/B0 适配差异说明。\n\n"
+        "【相似度最高的10条 ticket 供参考】\n"
+        "- 当前 MCP 响应未提供可检索的相似 ticket 列表能力，暂无法给出真实 Top10。\n"
+        "- 建议在 MCP 服务端增加相似检索接口（embedding/全文检索），并返回 key + 相似度 + 摘要。\n"
+        "- 临时占位（待服务端返回真实数据后替换）：\n"
+        "  1) N/A  2) N/A  3) N/A  4) N/A  5) N/A\n"
+        "  6) N/A  7) N/A  8) N/A  9) N/A  10) N/A\n\n"
+        "【原始输入摘要】\n"
+        f"{ticket_text[:1200]}{'...' if len(ticket_text) > 1200 else ''}"
+    )
+
+
+def _write_ticket_answer_to_file(
+    issue_key: str,
+    final_answer: str,
+    output_dir: str = DEFAULT_AI_ANSWER_DIR,
+) -> str:
+    """Write final answer to per-ticket file under a unified output directory."""
+    os.makedirs(output_dir, exist_ok=True)
+    safe_issue_key = re.sub(r"[^A-Za-z0-9._-]", "_", (issue_key or "unknown").strip())
+    file_path = os.path.join(output_dir, f"{safe_issue_key}.txt")
+
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    content = (
+        f"Issue Key: {issue_key}\n"
+        f"Generated At: {timestamp}\n"
+        f"{'-' * 40}\n"
+        f"{final_answer}\n"
+    )
+
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.write(content)
+
+    return file_path
+
+
+def _analyze_and_print_ticket_result(issue_key: str, ticket_text: str) -> str:
+    """Run MCP analysis, print decorated analysis output, and return RAG answer text."""
+    # Build structured prompt and call MCP server for analysis
+    analysis_prompt = _build_mcp_analysis_prompt(
+        issue_key=issue_key,
+        ticket_text=ticket_text,
+    )
+    analysis_result = _run_ticket_analysis_via_mcp(
+        issue_key=issue_key,
+        ticket_text=analysis_prompt,
+    )
+
+    # If MCP returns raw ticket dump, retry once with stronger instruction.
+    if _looks_like_raw_ticket_dump(analysis_result):
+        retry_prompt = (
+            analysis_prompt
+            + "\n\n再次强调：禁止返回原始 JSON。请仅返回“原因分析 + 下一步建议 + Top10相似ticket”。"
+        )
+        retry_result = _run_ticket_analysis_via_mcp(
+            issue_key=issue_key,
+            ticket_text=retry_prompt,
+        )
+        analysis_result = (
+            retry_result
+            if not _looks_like_raw_ticket_dump(retry_result)
+            else _build_local_fallback_analysis(issue_key=issue_key, ticket_text=ticket_text)
+        )
+
+    # Add required notice at the top and reminder link at the bottom
+    top_notice = "以下 comment 为 AI 生成内容，仅供参考。"
+    bottom_notice = "如需从 AI 获取更多关于此 ticket 的信息，请访问：http://127.0.0.1:8090/"
+
+    decorated_analysis_result = f"{top_notice}\n\n{analysis_result}\n\n{bottom_notice}"
+    print(f"[alert][mcp-analysis] {issue_key}:\n{decorated_analysis_result}\n")
+
+
+    try:
+        answer_file = _write_ticket_answer_to_file(
+            issue_key=issue_key,
+            final_answer=decorated_analysis_result,
+        )
+        print(f"[info] AI final answer saved: {answer_file}")
+    except Exception as file_exc:
+        print(
+            f"[warn] Failed to save AI final answer for {issue_key}: {file_exc}",
+            file=sys.stderr,
+        )
+
+    return decorated_analysis_result
 
 
 def parse_args() -> argparse.Namespace:
@@ -382,10 +794,10 @@ def main() -> int:
                             print(f"[alert] Ticket text:\n{ticket_text}")
 
                             try:
-                                # Build RAG output text for potential Jira internal comment
-                                final_answer = "Please ignore it"
-                                # Print RAG output
-                                print(f"[alert][rag] Answer: xxxxx \n")
+                                final_answer = _analyze_and_print_ticket_result(
+                                    issue_key=issue_key,
+                                    ticket_text=ticket_text,
+                                )
 
                                 if args.debug_enable_add_comment:
                                     try:
