@@ -43,7 +43,6 @@ MCP_SERVERS: Dict[str, Dict[str, Any]] = {
     },
     "jira_internal": {
         "url": os.getenv("JIRA_INTERNAL_MCP_URL", "http://127.0.0.1:8002/mcp"),
-        "auth_token": os.getenv("JIRA_INTERNAL_MCP_AUTH_TOKEN", ""),
     },
 }
 

@@ -31,6 +31,25 @@ from jira_add_comment import add_comment_to_jira
 from jira_export_external_scet import export_issue_to_file
 
 try:
+    from mcp_client import (
+        DEFAULT_MAX_TOKENS,
+        DEFAULT_MODEL,
+        ENV_LLM_GATEWAY_API_TOKEN,
+        ENV_LLM_GATEWAY_API_URL,
+        ENV_MCP_SERVER_URL_ATLASSIAN_INTERNAL,
+        parse_header_items,
+        run_chat_with_mcp,
+    )
+except Exception:
+    DEFAULT_MAX_TOKENS = 4096
+    DEFAULT_MODEL = ""
+    ENV_LLM_GATEWAY_API_TOKEN = ""
+    ENV_LLM_GATEWAY_API_URL = ""
+    ENV_MCP_SERVER_URL_ATLASSIAN_INTERNAL = ""
+    parse_header_items = None  # type: ignore
+    run_chat_with_mcp = None  # type: ignore
+
+try:
     from mcp import ClientSession
 except ImportError:
     try:
@@ -57,7 +76,6 @@ ENV_EXTERNAL_JIRA_URL = "EXTERNAL_JIRA_URL"
 ENV_SCET_MCP_URL = "SCET_MCP_URL"
 ENV_SCET_MCP_AUTH_TOKEN = "SCET_MCP_AUTH_TOKEN"
 ENV_JIRA_INTERNAL_MCP_URL = "JIRA_INTERNAL_MCP_URL"
-ENV_JIRA_INTERNAL_MCP_AUTH_TOKEN = "JIRA_INTERNAL_MCP_AUTH_TOKEN"
 
 MCP_SERVERS: Dict[str, Dict[str, str]] = {
     "jira_external": {
@@ -66,7 +84,6 @@ MCP_SERVERS: Dict[str, Dict[str, str]] = {
     },
     "jira_internal": {
         "url": os.getenv(ENV_JIRA_INTERNAL_MCP_URL, "http://127.0.0.1:8002/mcp"),
-        "auth_token": os.getenv(ENV_JIRA_INTERNAL_MCP_AUTH_TOKEN, ""),
     },
 }
 
@@ -352,10 +369,19 @@ def _mcp_result_to_text(result: Any) -> str:
     return str(result)
 
 
-def _pick_mcp_analysis_tool(tools: List[Any]) -> Optional[Any]:
+def _format_exception(exc: Exception) -> str:
+    # Python 3.11+ ExceptionGroup (e.g., "unhandled errors in a TaskGroup")
+    sub_excs = getattr(exc, "exceptions", None)
+    if isinstance(sub_excs, (list, tuple)) and sub_excs:
+        details = "; ".join(str(e) for e in sub_excs[:3])
+        return f"{exc} | details: {details}"
+    return str(exc)
+
+
+def _pick_mcp_analysis_tool(tools: List[Any], server_name: str = "") -> Optional[Any]:
     """
     Pick analysis-oriented tool first.
-    Avoid pure retrieval tools like get_issue/jira_get_issue when possible.
+    For jira_internal, avoid retrieval/watcher tools and only select analysis-like tools.
     """
     by_name: Dict[str, Any] = {}
     for t in tools:
@@ -378,13 +404,17 @@ def _pick_mcp_analysis_tool(tools: List[Any]) -> Optional[Any]:
         if name in by_name:
             return by_name[name]
 
-    # 2) fuzzy prefer analysis-like names
+    # fuzzy prefer analysis-like names
     for t in tools:
         lname = _tool_name(t).lower()
         if any(k in lname for k in ("analy", "rag", "qa", "recommend", "suggest", "diagnos")):
             return t
 
-    # 3) fallback to retrieval tools only as last resort
+    # jira_internal: do NOT fallback to generic issue/ticket tools (e.g. get_issue_watchers)
+    if server_name == "jira_internal":
+        return None
+
+    # other servers: fallback to retrieval tools as last resort
     for name in ("jira_get_issue", "get_issue"):
         if name in by_name:
             return by_name[name]
@@ -397,7 +427,12 @@ def _pick_mcp_analysis_tool(tools: List[Any]) -> Optional[Any]:
     return None
 
 
-def _build_tool_args(schema: Dict[str, Any], issue_key: str, ticket_text: str) -> Dict[str, Any]:
+def _build_tool_args(
+    schema: Dict[str, Any],
+    issue_key: str,
+    ticket_text: str,
+    text_only: bool = False,
+) -> Dict[str, Any]:
     properties = schema.get("properties", {}) if isinstance(schema, dict) else {}
     if not isinstance(properties, dict):
         properties = {}
@@ -405,7 +440,7 @@ def _build_tool_args(schema: Dict[str, Any], issue_key: str, ticket_text: str) -
     args: Dict[str, Any] = {}
     for key in properties.keys():
         lk = str(key).lower()
-        if lk in {"issue_key", "issue", "key", "ticket_key", "ticket_id", "id"}:
+        if (not text_only) and lk in {"issue_key", "issue", "key", "ticket_key", "ticket_id", "id"}:
             args[key] = issue_key
         elif lk in {"text", "content", "description", "prompt", "query", "ticket_text"}:
             args[key] = ticket_text
@@ -413,7 +448,7 @@ def _build_tool_args(schema: Dict[str, Any], issue_key: str, ticket_text: str) -
     if args:
         return args
 
-    return {"issue_key": issue_key}
+    return {"text": ticket_text} if text_only else {"issue_key": issue_key}
 
 
 async def _call_mcp_server_for_analysis(
@@ -451,26 +486,43 @@ async def _call_mcp_server_for_analysis(
         if not tools:
             raise RuntimeError(f"No MCP tools available from {server_name}")
 
-        picked_tool = _pick_mcp_analysis_tool(tools)
+        picked_tool = _pick_mcp_analysis_tool(tools, server_name=server_name)
         if picked_tool is None:
             raise RuntimeError(f"No suitable MCP analysis tool found in {server_name}")
 
         name = _tool_name(picked_tool)
         schema = _tool_schema(picked_tool)
-        args = _build_tool_args(schema, issue_key=issue_key, ticket_text=ticket_text)
+
+        # jira_internal: send prompt + ticket text for analysis, avoid key-based get_issue path
+        text_only_mode = (server_name == "jira_internal")
+        args = _build_tool_args(
+            schema,
+            issue_key=issue_key,
+            ticket_text=ticket_text,
+            text_only=text_only_mode,
+        )
 
         try:
             result = await session.call_tool(name, arguments=args)
             return _mcp_result_to_text(result)
         except Exception:
-            fallback_args_list = [
-                {"issue_key": issue_key},
-                {"key": issue_key},
-                {"issue": issue_key},
-                {"ticket_key": issue_key},
-                {"id": issue_key},
-                {"issue_key": issue_key, "text": ticket_text},
-            ]
+            if text_only_mode:
+                fallback_args_list = [
+                    {"prompt": ticket_text},
+                    {"query": ticket_text},
+                    {"text": ticket_text},
+                    {"description": ticket_text},
+                    {"content": ticket_text},
+                ]
+            else:
+                fallback_args_list = [
+                    {"issue_key": issue_key},
+                    {"key": issue_key},
+                    {"issue": issue_key},
+                    {"ticket_key": issue_key},
+                    {"id": issue_key},
+                    {"issue_key": issue_key, "text": ticket_text},
+                ]
             last_exc: Optional[Exception] = None
             for fa in fallback_args_list:
                 try:
@@ -483,49 +535,117 @@ async def _call_mcp_server_for_analysis(
             )
 
 
-async def _analyze_ticket_via_mcp(issue_key: str, ticket_text: str) -> str:
-    if ClientSession is None or streamablehttp_client is None:
-        return "MCP client dependency not available in current environment."
+async def _analyze_ticket_via_single_mcp(
+    server_name: str,
+    issue_key: str,
+    ticket_text: str,
+) -> str:
+    cfg = MCP_SERVERS.get(server_name)
+    if not cfg:
+        return "(error) server not configured"
+    try:
+        return await _call_mcp_server_for_analysis(
+            server_name=server_name,
+            server_cfg=cfg,
+            issue_key=issue_key,
+            ticket_text=ticket_text,
+        )
+    except Exception as exc:
+        return f"(error) {_format_exception(exc)}"
 
-    route_order = ("jira_external", "jira_internal")
-    last_err: Optional[str] = None
 
-    for server_name in route_order:
-        cfg = MCP_SERVERS.get(server_name)
-        if not cfg:
-            continue
+def _run_jira_internal_chat_analysis(issue_key: str, ticket_text: str) -> str:
+    """
+    Use jira_internal with prompt + ticket text.
+    Prefer mcp_client.run_chat_with_mcp when available; otherwise fallback to existing
+    streamable MCP tool-call path in text-only mode (no issue-key lookup intent).
+    """
+    # Preferred path: chat-style MCP client (same as main_test.py pattern)
+    if run_chat_with_mcp is not None:
+        mcp_server_url = os.getenv(ENV_JIRA_INTERNAL_MCP_URL, "http://127.0.0.1:8002/mcp").strip()
+        if not mcp_server_url:
+            return "(error) Missing jira_internal MCP server URL"
+
+        # jira_internal MCP server does not require client-side token/header.
+        headers: Dict[str, str] = {}
+
         try:
-            result = await _call_mcp_server_for_analysis(
-                server_name=server_name,
-                server_cfg=cfg,
+            answer = asyncio.run(
+                run_chat_with_mcp(
+                    user_prompt=ticket_text,
+                    mcp_server_url=mcp_server_url,
+                    mcp_headers=headers,
+                    model=DEFAULT_MODEL,
+                    max_tokens=DEFAULT_MAX_TOKENS,
+                    gateway_key=ENV_LLM_GATEWAY_API_TOKEN,
+                    base_url=ENV_LLM_GATEWAY_API_URL,
+                    llm_user=None,
+                    max_tool_rounds=8,
+                )
+            )
+            return str(answer).strip() or "(empty)"
+        except Exception as exc:
+            return f"(error) {exc}"
+
+    # Fallback path: use existing MCP tool-call route for jira_internal with text prompt.
+    cfg = MCP_SERVERS.get("jira_internal") or {}
+    internal_url = (cfg.get("url") or "").strip()
+    if not internal_url:
+        return "(error) jira_internal server URL is empty (set JIRA_INTERNAL_MCP_URL)"
+
+    try:
+        return asyncio.run(
+            _analyze_ticket_via_single_mcp(
+                server_name="jira_internal",
                 issue_key=issue_key,
                 ticket_text=ticket_text,
             )
-            return f"[server={server_name}]\n{result}"
-        except Exception as exc:
-            last_err = str(exc)
-
-    return f"MCP analysis failed on all configured servers. Last error: {last_err or 'unknown error'}"
-
-
-def _run_ticket_analysis_via_mcp(issue_key: str, ticket_text: str) -> str:
-    try:
-        return asyncio.run(_analyze_ticket_via_mcp(issue_key=issue_key, ticket_text=ticket_text))
+        )
     except Exception as exc:
-        return f"MCP analysis failed: {exc}"
+        return f"(error) {_format_exception(exc)}"
 
 
-def _build_mcp_analysis_prompt(issue_key: str, ticket_text: str) -> str:
-    """Build a structured prompt to request cause analysis, next steps, and top-10 similar tickets."""
+def _run_single_server_analysis_via_mcp(server_name: str, issue_key: str, ticket_text: str) -> str:
+    # jira_internal must use chat prompt + ticket text, not issue-key lookup
+    if server_name == "jira_internal":
+        return _run_jira_internal_chat_analysis(issue_key=issue_key, ticket_text=ticket_text)
+
+    try:
+        return asyncio.run(
+            _analyze_ticket_via_single_mcp(
+                server_name=server_name,
+                issue_key=issue_key,
+                ticket_text=ticket_text,
+            )
+        )
+    except Exception as exc:
+        return f"(error) MCP analysis failed: {exc}"
+
+
+def _build_external_mcp_analysis_prompt(issue_key: str, ticket_text: str) -> str:
+    """Prompt for jira_external MCP (SCET-focused)."""
     return (
-        "你是资深 Jira 工单分析助手。请基于以下 ticket 内容，输出中文分析结果。\n"
-        "请严格包含以下三个部分：\n"
-        "1) 原因分析（Root Cause Analysis）\n"
-        "2) 下一步建议（可执行、按优先级排序）\n"
-        "3) 相似度最高的10条 ticket 供参考\n"
-        "   - 每条请包含：ticket key、相似原因、可借鉴点。\n"
-        "【重要】不要原样返回 ticket 原始 JSON，不要仅返回字段转储。\n"
-        "请输出可读的分析结论；若缺少数据，请先说明缺失项，再给临时建议。\n\n"
+        "你是资深 Jira 工单分析助手（external/scet 视角）。请基于以下 ticket 内容输出中文分析。\n"
+        "请包含：\n"
+        "1) 原因分析\n"
+        "2) 下一步建议（按优先级）\n"
+        "3) 相似 SCET ticket Top10（每条给出 key + 相似原因 + 借鉴点）\n"
+        "【重要】不要返回原始 JSON 字段转储，只输出可读分析。\n\n"
+        f"Issue Key: {issue_key}\n"
+        "Ticket Content:\n"
+        f"{ticket_text}\n"
+    )
+
+
+def _build_internal_mcp_analysis_prompt(issue_key: str, ticket_text: str) -> str:
+    """Prompt for jira_internal MCP (internal atlassian/PLAT/Confluence-focused)."""
+    return (
+        "你是资深 Jira 工单分析助手（internal 视角）。请基于以下 ticket 内容输出中文分析。\n"
+        "请包含：\n"
+        "1) 原因分析\n"
+        "2) 下一步建议（按优先级）\n"
+        "3) 最相关 internal ticket / 文档线索 Top10（每条给出 key 或链接 + 相似原因 + 借鉴点）\n"
+        "【重要】不要返回原始 JSON 字段转储，只输出可读分析。\n\n"
         f"Issue Key: {issue_key}\n"
         "Ticket Content:\n"
         f"{ticket_text}\n"
@@ -563,6 +683,12 @@ def _looks_like_raw_ticket_dump(text: str) -> bool:
                 pass
 
     return False
+
+
+def _has_dual_server_sections(text: str) -> bool:
+    if not text:
+        return False
+    return ("【Answer 1 - jira_external】" in text) and ("【Answer 2 - jira_internal】" in text)
 
 
 def _build_local_fallback_analysis(issue_key: str, ticket_text: str) -> str:
@@ -616,32 +742,58 @@ def _write_ticket_answer_to_file(
 
 
 def _analyze_and_print_ticket_result(issue_key: str, ticket_text: str) -> str:
-    """Run MCP analysis, print decorated analysis output, and return RAG answer text."""
-    # Build structured prompt and call MCP server for analysis
-    analysis_prompt = _build_mcp_analysis_prompt(
+    """Run two MCP servers with independent prompts and print combined output."""
+    external_prompt = _build_external_mcp_analysis_prompt(
         issue_key=issue_key,
         ticket_text=ticket_text,
     )
-    analysis_result = _run_ticket_analysis_via_mcp(
+    internal_prompt = _build_internal_mcp_analysis_prompt(
         issue_key=issue_key,
-        ticket_text=analysis_prompt,
+        ticket_text=ticket_text,
     )
 
-    # If MCP returns raw ticket dump, retry once with stronger instruction.
-    if _looks_like_raw_ticket_dump(analysis_result):
-        retry_prompt = (
-            analysis_prompt
-            + "\n\n再次强调：禁止返回原始 JSON。请仅返回“原因分析 + 下一步建议 + Top10相似ticket”。"
-        )
-        retry_result = _run_ticket_analysis_via_mcp(
+    external_answer = _run_single_server_analysis_via_mcp(
+        server_name="jira_external",
+        issue_key=issue_key,
+        ticket_text=external_prompt,
+    )
+    internal_answer = _run_single_server_analysis_via_mcp(
+        server_name="jira_internal",
+        issue_key=issue_key,
+        ticket_text=internal_prompt,
+    )
+
+    # per-server retry/fallback to avoid raw dump
+    if _looks_like_raw_ticket_dump(external_answer):
+        external_retry = _run_single_server_analysis_via_mcp(
+            server_name="jira_external",
             issue_key=issue_key,
-            ticket_text=retry_prompt,
+            ticket_text=external_prompt + "\n\n再次强调：禁止返回原始 JSON，只输出分析结论。",
         )
-        analysis_result = (
-            retry_result
-            if not _looks_like_raw_ticket_dump(retry_result)
+        external_answer = (
+            external_retry
+            if not _looks_like_raw_ticket_dump(external_retry)
             else _build_local_fallback_analysis(issue_key=issue_key, ticket_text=ticket_text)
         )
+
+    if _looks_like_raw_ticket_dump(internal_answer):
+        internal_retry = _run_single_server_analysis_via_mcp(
+            server_name="jira_internal",
+            issue_key=issue_key,
+            ticket_text=internal_prompt + "\n\n再次强调：禁止返回原始 JSON，只输出分析结论。",
+        )
+        internal_answer = (
+            internal_retry
+            if not _looks_like_raw_ticket_dump(internal_retry)
+            else _build_local_fallback_analysis(issue_key=issue_key, ticket_text=ticket_text)
+        )
+
+    analysis_result = (
+        "【Answer 1 - jira_external】\n"
+        f"{external_answer}\n\n"
+        "【Answer 2 - jira_internal】\n"
+        f"{internal_answer}"
+    )
 
     # Add required notice at the top and reminder link at the bottom
     top_notice = "以下 comment 为 AI 生成内容，仅供参考。"
@@ -649,7 +801,6 @@ def _analyze_and_print_ticket_result(issue_key: str, ticket_text: str) -> str:
 
     decorated_analysis_result = f"{top_notice}\n\n{analysis_result}\n\n{bottom_notice}"
     print(f"[alert][mcp-analysis] {issue_key}:\n{decorated_analysis_result}\n")
-
 
     try:
         answer_file = _write_ticket_answer_to_file(
