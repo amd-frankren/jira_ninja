@@ -24,7 +24,6 @@ import sys
 import time
 
 from jira_scet_monitor import JiraScetMonitor
-from json_minify import minify_one_file
 from jira_add_comment import add_comment_to_jira
 
 
@@ -355,15 +354,6 @@ def main() -> int:
                         )
                         # Print exported file path
                         print(f"[info] Exported: {exported_file}")
-
-                        # Minify exported JSON in place
-                        src_size, minified_size = minify_one_file(exported_file, exported_file)
-                        ratio = (minified_size / src_size * 100) if src_size else 0.0
-                        # Print minify result
-                        print(
-                            f"[info] Minified: {exported_file} "
-                            f"({src_size} -> {minified_size} bytes, {ratio:.2f}%)"
-                        )
 
                         if args.debug_skip_target_scp_check:
                             print("[info] Debug skip enabled: bypass TARGET_SCP_IDS check for this ticket.")
