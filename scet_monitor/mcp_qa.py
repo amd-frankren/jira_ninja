@@ -9,7 +9,7 @@ Features:
    - ask_mcp_qa(...)
 2) Can be used directly from CLI:
    - python scet_monitor/mcp_qa.py --ticket-url "https://ontrack.amd.com/browse/SCET-28231"
-   - python scet_monitor/mcp_qa.py --question "请分析这个问题描述：..."
+   - python scet_monitor/mcp_qa.py --question "Please analyze this issue description: ..."
 
 Input supports either:
 - ticket url
@@ -66,15 +66,15 @@ MCP_SERVERS: Dict[str, Dict[str, Any]] = {
     },
 }
 
-SYSTEM_PROMPT = """你是一个 Jira Ticket 问答助手，可调用 MCP 工具。
-你可以使用来自 jira_external、jira_internal 两个 MCP server 的工具。
+SYSTEM_PROMPT = """You are a Jira Ticket QA assistant that can call MCP tools.
+You can use tools from two MCP servers: jira_external and jira_internal.
 
-规则：
-1) 优先通过工具获取事实，不要编造。
-2) 回答中给出关键信息和依据。
-3) 如果用户问题不充分，或者你需要用户先做选择，请返回**严格 JSON**（不要额外文本）：
-{"type":"ask_user","question":"你的追问","options":["可选项1","可选项2"]}
-4) 如果不需要追问，直接给出最终回答（普通文本）。
+Rules:
+1) Prefer retrieving facts through tools; do not fabricate.
+2) Provide key facts and supporting evidence in the answer.
+3) If the user input is insufficient, or you need the user to choose first, return **strict JSON** only (no extra text):
+{"type":"ask_user","question":"Your follow-up question","options":["Option 1","Option 2"]}
+4) If no follow-up is needed, return the final answer directly in plain text.
 """
 
 
@@ -300,7 +300,7 @@ def detect_server_hints(user_message: str) -> List[str]:
 
     if "scet" in text or re.search(r"\bscet-\d+\b", text):
         picked.append("jira_external")
-    if "internal" in text or "内网" in text or "plat" in text:
+    if "internal" in text or "intranet" in text or "plat" in text:
         picked.append("jira_internal")
 
     uniq: List[str] = []
@@ -331,10 +331,10 @@ def build_input_message(ticket_url: str = "", question: str = "") -> Tuple[str, 
         return q, issue_key
     if turl:
         if issue_key:
-            return f"请分析 ticket {issue_key} 的问题原因、依据和下一步建议。Ticket URL: {turl}", issue_key
-        return f"请分析这个 ticket 链接中的问题并给出原因、依据和下一步建议：{turl}", issue_key
+            return f"Please analyze ticket {issue_key}: root cause, evidence, and next-step recommendations. Ticket URL: {turl}", issue_key
+        return f"Please analyze the issue in this ticket URL and provide root cause, evidence, and next-step recommendations: {turl}", issue_key
 
-    raise ValueError("ticket_url 与 question 不能同时为空")
+    raise ValueError("ticket_url and question cannot both be empty")
 
 
 async def ask_mcp_qa_async(
@@ -349,7 +349,7 @@ async def ask_mcp_qa_async(
     state = SESSIONS.setdefault(sid, SessionState())
     if state.pending_question:
         pending_q = state.pending_question.get("question", "")
-        state.messages.append({"role": "assistant", "content": f"补充提问：{pending_q}"})
+        state.messages.append({"role": "assistant", "content": f"Follow-up question: {pending_q}"})
         state.pending_question = None
 
     state.messages.append({"role": "user", "content": user_message})
@@ -390,11 +390,11 @@ async def ask_mcp_qa_async(
                 selected_servers = hinted_servers
             else:
                 ask_user = {
-                    "question": "当前可用工具较多，请先选择要查询的数据源",
+                    "question": "Too many tools are available. Please choose the data source first.",
                     "options": ["jira_external", "jira_internal"],
                 }
                 state.pending_question = ask_user
-                state.messages.append({"role": "assistant", "content": f"需要你补充信息：{ask_user['question']}"})
+                state.messages.append({"role": "assistant", "content": f"More input required: {ask_user['question']}"})
                 return QAResult(
                     session_id=sid,
                     answer="",
@@ -440,7 +440,7 @@ async def ask_mcp_qa_async(
                 ask_user = maybe_extract_ask_user(answer)
                 if ask_user:
                     state.pending_question = ask_user
-                    state.messages.append({"role": "assistant", "content": f"需要你补充信息：{ask_user['question']}"})
+                    state.messages.append({"role": "assistant", "content": f"More input required: {ask_user['question']}"})
                     return QAResult(
                         session_id=sid,
                         answer="",
@@ -477,7 +477,7 @@ async def ask_mcp_qa_async(
                 try:
                     server_name, tool_name = split_prefixed_tool_name(full_name)
                 except Exception as e:
-                    messages.append({"role": "tool", "tool_call_id": tool_call_id, "content": f"工具名解析失败: {e}"})
+                    messages.append({"role": "tool", "tool_call_id": tool_call_id, "content": f"Tool name parsing failed: {e}"})
                     continue
 
                 # Special routing for issue fetch:
@@ -525,7 +525,7 @@ async def ask_mcp_qa_async(
 
                 messages.append({"role": "tool", "tool_call_id": tool_call_id, "content": tool_text})
 
-        final_text = "达到最大工具调用轮次，未能生成最终答案。"
+        final_text = "Reached the maximum tool-call rounds and failed to produce a final answer."
         state.messages.append({"role": "assistant", "content": final_text})
         return QAResult(
             session_id=sid,
@@ -604,11 +604,11 @@ def main() -> int:
     print("-" * 60)
 
     if result.pending_question:
-        print("需要补充信息：")
+        print("More input is required:")
         print(result.pending_question.get("question", ""))
         options = result.pending_question.get("options") or []
         if options:
-            print("可选项：")
+            print("Options:")
             for idx, opt in enumerate(options, 1):
                 print(f"{idx}. {opt}")
     else:

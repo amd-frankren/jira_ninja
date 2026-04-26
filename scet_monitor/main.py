@@ -264,7 +264,7 @@ def _build_ai_comment(issue_url: str, ticket_text: str) -> str:
 
     if qa_result.pending_question:
         pending_q = qa_result.pending_question.get("question", "")
-        base_answer = f"AI 需要补充信息后才能继续分析：{pending_q}"
+        base_answer = f"AI needs additional input before continuing the analysis: {pending_q}"
     else:
         base_answer = qa_result.answer or "(empty answer from mcp_qa)"
 

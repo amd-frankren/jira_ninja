@@ -1,21 +1,22 @@
 # Jira Ticket QA WebUI
 
-
+```powershell
 $env:LLM_GATEWAY_API_URL = "https://llm-api.amd.com/OpenAI"
-env:LLM_GATEWAY_API_TOKEN = "eb9f26fa88044526818ca5a49b52124c"
+$env:LLM_GATEWAY_API_TOKEN = "your_token_here"
 python -m uvicorn server:app --host 127.0.0.1 --port 8090
+```
 
-一个独立的新项目目录（未修改你现有代码），提供：
+This is an independent project directory (without modifying your existing code), providing:
 
-- Web Server（FastAPI）
-- Web UI（原生 HTML/CSS/JS）
-- 基于 LLM + MCP tools 的 Jira Ticket 问答
-- 实时显示 MCP 调用过程与结果（SSE 流式事件）
-- 支持“反问用户 / 让用户选择”的交互流程
+- Web Server (FastAPI)
+- Web UI (plain HTML/CSS/JS)
+- Jira Ticket Q&A based on LLM + MCP tools
+- Real-time MCP call process and results display (SSE streaming events)
+- Interactive flow for follow-up questions and user choices
 
 ---
 
-## 目录结构
+## Directory Structure
 
 ```text
 jira_ticket_webapp/
@@ -28,44 +29,44 @@ jira_ticket_webapp/
 
 ---
 
-## 功能说明
+## Features
 
-- 前端调用：`POST /api/chat/stream`
-- 返回类型：`text/event-stream`（SSE）
-- 主要事件：
-  - `status`：状态信息
-  - `tool_start`：开始调用 MCP 工具
-  - `tool_result`：工具返回结果
-  - `tool_error`：工具调用错误
-  - `ask_user`：模型反问用户，并可带选项
-  - `final`：最终回答
+- Frontend endpoint: `POST /api/chat/stream`
+- Return type: `text/event-stream` (SSE)
+- Main events:
+  - `status`: status info
+  - `tool_start`: MCP tool call started
+  - `tool_result`: MCP tool result
+  - `tool_error`: MCP tool error
+  - `ask_user`: model follow-up question with optional choices
+  - `final`: final answer
 
 ---
 
-## 运行前准备
+## Prerequisites
 
-你需要先确保这几个 MCP server 已可访问：
+Make sure these MCP servers are accessible first:
 
-- `http://127.0.0.1:8000/mcp`（jira_external）
-- `http://127.0.0.1:8002/mcp`（jira_internal）
+- `http://127.0.0.1:8000/mcp` (jira_external)
+- `http://127.0.0.1:8002/mcp` (jira_internal)
 
-同时需要 LLM 网关环境变量：
+You also need LLM gateway environment variables:
 
 - `LLM_GATEWAY_API_URL`
 - `LLM_GATEWAY_API_TOKEN`
 
 ---
 
-## 安装与启动
+## Install and Run
 
-在仓库根目录执行（Windows cmd / PowerShell 都可以）：
+Run in the repository root (Windows cmd / PowerShell both work):
 
 ```bash
 pip install -r requirements.txt
 uvicorn server:app --host 127.0.0.1 --port 8090 --reload
 ```
 
-浏览器打开：
+Open in browser:
 
 ```text
 http://127.0.0.1:8090
@@ -73,32 +74,32 @@ http://127.0.0.1:8090
 
 ---
 
-## 可选环境变量
+## Optional Environment Variables
 
 ### LLM
-- `WEBUI_LLM_MODEL`（默认 `gpt-5-mini`）
-- `WEBUI_LLM_MAX_TOKENS`（默认 `1200`）
+- `WEBUI_LLM_MODEL` (default: `gpt-5-mini`)
+- `WEBUI_LLM_MAX_TOKENS` (default: `1200`)
 
-### MCP URL（可覆盖默认值）
+### MCP URL (override defaults)
 - `SCET_MCP_URL`
 - `JIRA_INTERNAL_MCP_URL`
 
-### MCP 鉴权 Token（如你的 MCP server 需要）
+### MCP auth token (if your MCP server requires it)
 - `SCET_MCP_AUTH_TOKEN`
 - `JIRA_INTERNAL_MCP_AUTH_TOKEN`
 
 ---
 
-## 关于“反问用户 / 选择项”
+## About Follow-up Questions / User Choices
 
-后端约定模型输出如下 JSON（严格 JSON）即触发前端交互：
+If the backend model outputs the following JSON (strict JSON), frontend interaction is triggered:
 
 ```json
 {
   "type": "ask_user",
-  "question": "你要查询哪个项目？",
+  "question": "Which project do you want to query?",
   "options": ["SCET", "ACV2", "PLAT"]
 }
 ```
 
-前端会渲染按钮；用户点击后会继续下一轮问答并保留同一个会话上下文。
+The frontend renders buttons. After user selection, it continues to the next Q&A round while preserving the same session context.

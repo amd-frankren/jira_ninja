@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -326,12 +326,12 @@
           <div class="card">
             <div class="card-header">
               <h1 class="title">Ticket Q&A</h1>
-              <div class="subtitle">通过 MCP Servers（jira_external / jira_internal）实时检索并回答</div>
+              <div class="subtitle">Retrieve and answer in real time via MCP Servers (jira_external / jira_internal)</div>
             </div>
             <div id="chat"></div>
             <div class="composer">
-              <input id="qaInput" placeholder="输入问题，例如：帮我看一下 SCET-123 的状态和最近评论" />
-              <button id="qaSendBtn" class="btn-success">发送</button>
+              <input id="qaInput" placeholder="Enter a question, e.g. check SCET-123 status and latest comments" />
+              <button id="qaSendBtn" class="btn-success">Send</button>
             </div>
           </div>
         </section>
@@ -343,11 +343,11 @@
             </div>
             <div style="padding: 14px">
               <div class="stack">
-                <textarea id="classifyText" placeholder="粘贴 ticket 描述、根因分析、日志结论等"></textarea>
+                <textarea id="classifyText" placeholder="Paste ticket description, RCA, log conclusions, etc."></textarea>
                 <div class="actions">
-                  <button id="classifyBtn" class="btn-primary">执行自动分类</button>
+                  <button id="classifyBtn" class="btn-primary">Run Auto Classification</button>
                 </div>
-                <div id="classifyResult" class="result-box hint">等待输入并执行分类...</div>
+                <div id="classifyResult" class="result-box hint">Waiting for input to run classification...</div>
               </div>
             </div>
           </div>
@@ -357,12 +357,12 @@
           <div class="card">
             <div class="card-header">
               <h1 class="title">AI Knowledge Hub</h1>
-              <div class="subtitle">以知识列表为主，点击添加后在弹窗中填写详细内容</div>
+              <div class="subtitle">Manage a knowledge list; click Add and fill in details in the modal</div>
             </div>
             <div style="padding: 14px">
               <div class="actions" style="margin-bottom: 10px">
-                <button id="kAddBtn" class="btn-primary">+ 添加内容</button>
-                <button id="kRefreshBtn" class="btn-muted">刷新列表</button>
+                <button id="kAddBtn" class="btn-primary">+ Add Item</button>
+                <button id="kRefreshBtn" class="btn-muted">Refresh List</button>
               </div>
               <div id="knowledgeList" class="knowledge-list"></div>
             </div>
@@ -371,16 +371,16 @@
 
         <div id="knowledgeModal" class="modal hidden">
           <div class="modal-panel">
-            <div class="modal-title" id="kModalTitle">新增内容</div>
+            <div class="modal-title" id="kModalTitle">Create Item</div>
             <div class="stack">
-              <input id="kTitle" placeholder="标题（必填）" />
-              <input id="kUrl" placeholder="链接 URL（可选）" />
-              <textarea id="kContent" placeholder="正文内容（可选）"></textarea>
+              <input id="kTitle" placeholder="Title (required)" />
+              <input id="kUrl" placeholder="Link URL (optional)" />
+              <textarea id="kContent" placeholder="Content (optional)"></textarea>
               <div class="actions">
-                <button id="kSaveBtn" class="btn-primary">保存</button>
-                <button id="kCancelBtn" class="btn-muted">取消</button>
+                <button id="kSaveBtn" class="btn-primary">Save</button>
+                <button id="kCancelBtn" class="btn-muted">Cancel</button>
               </div>
-              <div id="kEditHint" class="hint">当前模式：新建</div>
+              <div id="kEditHint" class="hint">Current mode: Create</div>
             </div>
           </div>
         </div>
@@ -433,7 +433,7 @@
         try {
           await qaStreamChat(text);
         } catch (err) {
-          qaAddMsg(`请求失败: ${err?.message || err}`, "error");
+          qaAddMsg(`Request failed: ${err?.message || err}`, "error");
         } finally {
           qaSetBusy(false);
           qaInputEl.focus();
@@ -480,24 +480,24 @@
               break;
             case "tool_start":
               qaAddMsg(
-                `[工具调用] ${payload.server}.${payload.tool}\n参数: ${JSON.stringify(payload.arguments, null, 2)}`,
+                `[Tool call] ${payload.server}.${payload.tool}\nArguments: ${JSON.stringify(payload.arguments, null, 2)}`,
                 "tool"
               );
               break;
             case "tool_result":
-              qaAddMsg(`[工具结果] ${payload.server}.${payload.tool}\n${payload.result || ""}`, "tool");
+              qaAddMsg(`[Tool result] ${payload.server}.${payload.tool}\n${payload.result || ""}`, "tool");
               break;
             case "tool_error":
-              qaAddMsg(`[工具错误] ${payload.server || ""}.${payload.tool || ""}\n${payload.error || ""}`, "error");
+              qaAddMsg(`[Tool error] ${payload.server || ""}.${payload.tool || ""}\n${payload.error || ""}`, "error");
               break;
             case "ask_user":
-              qaAddMsg(`需要你补充：${payload.question || "请补充信息"}`, "assistant");
+              qaAddMsg(`More input required: ${payload.question || "Please provide additional information"}`, "assistant");
               break;
             case "final":
               qaAddMsg(payload.answer || "", "assistant");
               break;
             case "error":
-              qaAddMsg(payload.message || "未知错误", "error");
+              qaAddMsg(payload.message || "Unknown error", "error");
               break;
           }
 
@@ -524,7 +524,7 @@
       qaInputEl.addEventListener("keydown", (e) => {
         if (e.key === "Enter") qaSubmit();
       });
-      qaAddMsg("欢迎使用 Jira Ticket 问答助手。请输入你的问题。", "assistant");
+      qaAddMsg("Welcome to the Jira Ticket QA assistant. Please enter your question.", "assistant");
 
       // -------------------- Classification page --------------------
       const classifyBtn = document.getElementById("classifyBtn");
@@ -534,11 +534,11 @@
       classifyBtn.addEventListener("click", async () => {
         const text = classifyTextEl.value.trim();
         if (!text) {
-          classifyResultEl.textContent = "请先输入 ticket 描述。";
+          classifyResultEl.textContent = "Please enter the ticket description first.";
           return;
         }
         classifyBtn.disabled = true;
-        classifyResultEl.textContent = "分类中...";
+        classifyResultEl.textContent = "Classifying...";
         try {
           const resp = await fetch("/api/ticket/classify", {
             method: "POST",
@@ -550,9 +550,9 @@
           classifyResultEl.innerHTML =
             `<b>Q1:</b> ${data.q1_label || data.q1_id}<br>` +
             `<b>Q2:</b> ${data.q2_text || ""}<br><br>` +
-            `<b>推理说明:</b> ${data.reasoning || "-"}`;
+            `<b>Reasoning:</b> ${data.reasoning || "-"}`;
         } catch (err) {
-          classifyResultEl.textContent = `分类失败: ${err?.message || err}`;
+          classifyResultEl.textContent = `Classification failed: ${err?.message || err}`;
         } finally {
           classifyBtn.disabled = false;
         }
@@ -586,8 +586,8 @@
         kTitleEl.value = "";
         kUrlEl.value = "";
         kContentEl.value = "";
-        kModalTitle.textContent = "新增内容";
-        kEditHint.textContent = "当前模式：新建";
+        kModalTitle.textContent = "Create Item";
+        kEditHint.textContent = "Current mode: Create";
       }
 
       function formatUpdatedAt(ts) {
@@ -599,7 +599,7 @@
       }
 
       async function loadKnowledgeList() {
-        knowledgeListEl.innerHTML = `<div class="hint">加载中...</div>`;
+        knowledgeListEl.innerHTML = `<div class="hint">Loading...</div>`;
         try {
           const resp = await fetch("/api/knowledge");
           const data = await resp.json();
@@ -607,7 +607,7 @@
           const items = Array.isArray(data.items) ? data.items : [];
 
           if (!items.length) {
-            knowledgeListEl.innerHTML = `<div class="hint">暂无内容，点击上方“添加内容”创建。</div>`;
+            knowledgeListEl.innerHTML = `<div class="hint">No items yet. Click "Add Item" above to create one.</div>`;
             return;
           }
 
@@ -621,8 +621,8 @@
               <div style="margin-bottom: 6px; white-space: pre-wrap;">${item.content || ""}</div>
               ${item.url ? `<div style="margin-bottom:8px;"><a href="${item.url}" target="_blank" style="color:#93c5fd;">${item.url}</a></div>` : ""}
               <div class="actions">
-                <button class="btn-muted btn-sm" data-action="edit">编辑</button>
-                <button class="btn-danger btn-sm" data-action="delete">删除</button>
+                <button class="btn-muted btn-sm" data-action="edit">Edit</button>
+                <button class="btn-danger btn-sm" data-action="delete">Delete</button>
               </div>
             `;
 
@@ -631,17 +631,17 @@
               kTitleEl.value = item.title || "";
               kUrlEl.value = item.url || "";
               kContentEl.value = item.content || "";
-              kModalTitle.textContent = "编辑内容";
-              kEditHint.textContent = `当前模式：编辑 (${item.id})`;
+              kModalTitle.textContent = "Edit Item";
+              kEditHint.textContent = `Current mode: Edit (${item.id})`;
               openKnowledgeModal();
             });
 
             div.querySelector('[data-action="delete"]').addEventListener("click", async () => {
-              if (!confirm("确认删除该条知识吗？")) return;
+              if (!confirm("Are you sure you want to delete this knowledge item?")) return;
               const resp = await fetch(`/api/knowledge/${item.id}`, { method: "DELETE" });
               const data = await resp.json();
               if (!resp.ok) {
-                alert(data.detail || `删除失败 HTTP ${resp.status}`);
+                alert(data.detail || `Delete failed HTTP ${resp.status}`);
                 return;
               }
               if (editingId === item.id) resetKnowledgeForm();
@@ -651,7 +651,7 @@
             knowledgeListEl.appendChild(div);
           });
         } catch (err) {
-          knowledgeListEl.innerHTML = `<div class="hint">加载失败: ${err?.message || err}</div>`;
+          knowledgeListEl.innerHTML = `<div class="hint">Load failed: ${err?.message || err}</div>`;
         }
       }
 
@@ -678,7 +678,7 @@
         };
 
         if (!payload.title) {
-          alert("标题不能为空");
+          alert("Title cannot be empty");
           return;
         }
 
@@ -698,7 +698,7 @@
           resetKnowledgeForm();
           await loadKnowledgeList();
         } catch (err) {
-          alert(`保存失败: ${err?.message || err}`);
+          alert(`Save failed: ${err?.message || err}`);
         }
       });
 

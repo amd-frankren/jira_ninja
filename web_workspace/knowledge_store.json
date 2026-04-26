@@ -9,21 +9,13 @@
       "updated_at": "2026-04-26T03:18:34+00:00"
     },
     {
-      "id": "c9600a1b-5769-444b-8ff6-088d9f2fc255",
-      "type": "link",
-      "title": "test2",
-      "content": "",
-      "url": "https://amd.atlassian.net/wiki/spaces/SCPIKMM/pages/edit-v2/1631570524",
-      "updated_at": "2026-04-25T18:47:36+00:00"
-    },
-    {
       "id": "2088e83a-e9d5-4d3e-8342-f90dc574b00e",
-      "type": "article",
+      "type": "link",
       "title": "MCP atlassian_configuration guide",
-      "content": "xxxx",
-      "url": "",
-      "updated_at": "2026-04-25T19:08:50+00:00"
+      "content": "",
+      "url": "https://amdcloud-my.sharepoint.com/:w:/r/personal/frankren_amd_com/_layouts/15/Doc.aspx?sourcedoc=%7BEAD59894-57A2-4CEB-BE6E-3B1F80ADF4EE%7D&file=mcp_atlassian_configuration_guide_v2.docx&action=default&mobileredirect=true&wdOrigin=OFFICEWEBAPPHOME.SHELL%2CAPPHOME-WEB.BANNER.UPLOAD&wdPreviousSession=17b14a8e-8de4-4a24-a60a-13334311f855&wdPreviousSessionSrc=AppHomeWeb&ct=1777209778166",
+      "updated_at": "2026-04-26T13:25:48+00:00"
     }
   ],
-  "updated_at": "2026-04-26T03:24:36+00:00"
+  "updated_at": "2026-04-26T13:25:48+00:00"
 }

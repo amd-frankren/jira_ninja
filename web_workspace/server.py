@@ -354,7 +354,7 @@ def detect_server_hints(user_message: str) -> List[str]:
 
     if "scet" in text or re.search(r"\bscet-\d+\b", text):
         picked.append("jira_external")
-    if "internal" in text or "内网" in text or "plat" in text:
+    if "internal" in text or "intranet" in text or "plat" in text:
         picked.append("jira_internal")
 
     uniq: List[str] = []
@@ -408,9 +408,9 @@ def classify_ticket(text: str) -> Dict[str, Any]:
                 best_q2 = option
 
     if hit_keywords:
-        reasoning = f"命中关键词: {', '.join(hit_keywords[:6])}，推荐 {q1_label} / {best_q2}"
+        reasoning = f"Matched keywords: {', '.join(hit_keywords[:6])}, recommended {q1_label} / {best_q2}"
     else:
-        reasoning = f"未命中明显关键词，采用兜底分类 {q1_label} / {best_q2}"
+        reasoning = f"No strong keyword match found, using fallback classification {q1_label} / {best_q2}"
 
     return {
         "q1_id": best_q1,
@@ -467,15 +467,15 @@ def write_knowledge_items(items: List[Dict[str, Any]]) -> None:
 # -----------------------------
 # Agent core
 # -----------------------------
-SYSTEM_PROMPT = """你是一个 Jira Ticket 问答助手，可调用 MCP 工具。
-你可以使用来自 jira_external、jira_internal 两个 MCP server 的工具。
+SYSTEM_PROMPT = """You are a Jira Ticket QA assistant that can call MCP tools.
+You can use tools from two MCP servers: jira_external and jira_internal.
 
-规则：
-1) 优先通过工具获取事实，不要编造。
-2) 回答中给出关键信息和依据。
-3) 如果用户问题不充分，或者你需要用户先做选择，请返回**严格 JSON**（不要额外文本）：
-{"type":"ask_user","question":"你的追问","options":["可选项1","可选项2"]}
-4) 如果不需要追问，直接给出最终回答（普通文本）。
+Rules:
+1) Prefer retrieving facts through tools; do not fabricate.
+2) Provide key facts and supporting evidence in the answer.
+3) If the user input is insufficient, or you need the user to choose first, return **strict JSON** only (no extra text):
+{"type":"ask_user","question":"Your follow-up question","options":["Option 1","Option 2"]}
+4) If no follow-up is needed, return the final answer directly in plain text.
 """
 
 
@@ -490,7 +490,7 @@ async def run_agent_stream(
         state.messages.append(
             {
                 "role": "assistant",
-                "content": f"补充提问：{pending_q}",
+                "content": f"Follow-up question: {pending_q}",
             }
         )
         state.pending_question = None
@@ -498,7 +498,7 @@ async def run_agent_stream(
     state.messages.append({"role": "user", "content": user_message})
 
     yield sse_event("session", {"session_id": session_id})
-    yield sse_event("status", {"message": "连接 MCP servers..."})
+    yield sse_event("status", {"message": "Connecting to MCP servers..."})
 
     llm_client = create_llm_client()
 
@@ -533,7 +533,7 @@ async def run_agent_stream(
             yield sse_event(
                 "status",
                 {
-                    "message": f"{server_name} 已连接，工具数: {len(tools)}",
+                    "message": f"{server_name} connected, tool count: {len(tools)}",
                     "server": server_name,
                     "tool_count": len(tools),
                 },
@@ -548,15 +548,15 @@ async def run_agent_stream(
                 selected_servers = hinted_servers
                 yield sse_event(
                     "status",
-                    {"message": f"工具总数超限({total_tool_count})，已按问题线索自动选择: {', '.join(selected_servers)}"},
+                    {"message": f"Total tool count exceeds limit ({total_tool_count}); auto-selected by query hints: {', '.join(selected_servers)}"},
                 )
             else:
                 ask_user = {
-                    "question": "当前可用工具较多，请先选择要查询的数据源",
+                    "question": "Too many tools are available. Please choose the data source first.",
                     "options": ["jira_external", "jira_internal"],
                 }
                 state.pending_question = ask_user
-                state.messages.append({"role": "assistant", "content": f"需要你补充信息：{ask_user['question']}"})
+                state.messages.append({"role": "assistant", "content": f"More input required: {ask_user['question']}"})
                 yield sse_event("ask_user", ask_user)
                 return
 
@@ -595,7 +595,7 @@ async def run_agent_stream(
                 ask_user = maybe_extract_ask_user(answer)
                 if ask_user:
                     state.pending_question = ask_user
-                    state.messages.append({"role": "assistant", "content": f"需要你补充信息：{ask_user['question']}"})
+                    state.messages.append({"role": "assistant", "content": f"More input required: {ask_user['question']}"})
                     yield sse_event("ask_user", {"question": ask_user["question"], "options": ask_user.get("options", [])})
                     return
 
@@ -618,7 +618,7 @@ async def run_agent_stream(
                 try:
                     server_name, tool_name = split_prefixed_tool_name(full_name)
                 except Exception as e:
-                    err = f"工具名解析失败: {e}"
+                    err = f"Tool name parsing failed: {e}"
                     yield sse_event("tool_error", {"tool": full_name, "error": err})
                     messages.append({"role": "tool", "tool_call_id": tool_call_id, "content": err})
                     continue
@@ -691,7 +691,7 @@ async def run_agent_stream(
 
                 messages.append({"role": "tool", "tool_call_id": tool_call_id, "content": tool_text})
 
-        final_text = "达到最大工具调用轮次，未能生成最终答案。"
+        final_text = "Reached the maximum tool-call rounds and failed to produce a final answer."
         state.messages.append({"role": "assistant", "content": final_text})
         yield sse_event("final", {"answer": final_text})
 
@@ -718,7 +718,7 @@ async def chat_stream(req: ChatRequest) -> StreamingResponse:
 
     async def event_gen() -> AsyncGenerator[str, None]:
         if not message:
-            yield sse_event("error", {"message": "message 不能为空"})
+            yield sse_event("error", {"message": "message cannot be empty"})
             return
         try:
             async for ev in run_agent_stream(session_id=session_id, user_message=message):
@@ -739,7 +739,7 @@ def ticket_classify_options() -> Dict[str, Any]:
 def ticket_classify(req: TicketClassifyRequest) -> Dict[str, Any]:
     text = req.text.strip()
     if not text:
-        raise HTTPException(status_code=400, detail="text 不能为空")
+        raise HTTPException(status_code=400, detail="text cannot be empty")
     result = classify_ticket(text)
     if req.ticket_id:
         result["ticket_id"] = req.ticket_id
@@ -776,7 +776,7 @@ async def update_knowledge(item_id: str, req: KnowledgeItemInput) -> Dict[str, A
         items = read_knowledge_items()
         idx = next((i for i, x in enumerate(items) if x.get("id") == item_id), -1)
         if idx < 0:
-            raise HTTPException(status_code=404, detail="知识条目不存在")
+            raise HTTPException(status_code=404, detail="Knowledge item does not exist")
 
         normalized_url = req.url.strip()
         items[idx] = {
@@ -797,7 +797,7 @@ async def delete_knowledge(item_id: str) -> Dict[str, Any]:
         items = read_knowledge_items()
         new_items = [x for x in items if x.get("id") != item_id]
         if len(new_items) == len(items):
-            raise HTTPException(status_code=404, detail="知识条目不存在")
+            raise HTTPException(status_code=404, detail="Knowledge item does not exist")
         write_knowledge_items(new_items)
         return {"ok": True, "deleted_id": item_id}
 

@@ -1,12 +1,12 @@
 @echo off
 REM ============================================================
-REM AMD Competency Selector – Windows 啟動腳本
-REM 部署主機 : 10.95.37.121
-REM 使用者連結: http://10.95.37.121:5000
+REM AMD Competency Selector - Windows startup script
+REM Deployment host: 10.95.37.121
+REM User URL: http://10.95.37.121:5000
 REM ============================================================
-REM 用法：
-REM   開發模式  → 雙擊此檔案 或 執行 start.bat
-REM   正式環境  → 執行 start.bat prod
+REM Usage:
+REM   Development mode -> double-click this file or run start.bat
+REM   Production mode  -> run start.bat prod
 REM ============================================================
 
 chcp 65001 >nul
@@ -15,7 +15,7 @@ setlocal
 set "SCRIPT_DIR=%~dp0"
 cd /d "%SCRIPT_DIR%"
 
-REM ── 從 .env 讀取 PORT（預設 5000）───────────────────────────
+REM -- Read PORT from .env (default: 5000) ---------------------------
 set "PORT=5000"
 if exist ".env" (
     for /f "usebackq tokens=1,* delims==" %%A in (".env") do (
@@ -31,7 +31,7 @@ echo   User URL    : http://10.95.37.121:%PORT%
 echo  =====================================================
 echo.
 
-REM ── 檢查 Python 是否安裝 ─────────────────────────────────
+REM -- Check whether Python is installed ------------------------------
 python --version >nul 2>&1
 if errorlevel 1 (
     echo [ERROR] Python not found. Please install Python 3.10+.
@@ -40,7 +40,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM ── 檢查 .env 是否存在 ───────────────────────────────────
+REM -- Check whether .env exists -------------------------------------
 if not exist ".env" (
     echo [WARN] .env not found. Copying from .env.example...
     copy ".env.example" ".env" >nul
@@ -50,7 +50,7 @@ if not exist ".env" (
     exit /b 1
 )
 
-REM ── 安裝依賴（若尚未安裝）────────────────────────────────
+REM -- Install dependencies (if not installed) -----------------------
 python -c "import flask" >nul 2>&1
 if errorlevel 1 (
     echo [INFO] Installing Python dependencies...
@@ -62,7 +62,7 @@ if errorlevel 1 (
     )
 )
 
-REM ── 判斷啟動模式 ─────────────────────────────────────────
+REM -- Determine startup mode ----------------------------------------
 if /i "%1"=="prod" (
     echo [INFO] Starting in PRODUCTION mode via waitress...
     echo [INFO] Binding : http://0.0.0.0:%PORT%

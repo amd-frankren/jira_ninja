@@ -19,10 +19,10 @@ This file supports two usages:
      python upload_to_sharepoint.py --file ./xx.json --delete-local-after-upload
      python upload_to_sharepoint.py --folder ./data_dir --delete-local-after-upload
 
-     # 获取指定SharePoint文件夹下的文件列表和总个数
+     # Get file list and total count under the specified SharePoint folder
      python upload_to_sharepoint.py --list-remote-files --remote-folder SCETS/test_auto
 
-     # 获取指定SharePoint文件夹下的文件列表和总个数 (递归子文件夹)
+     # Get file list and total count under the specified SharePoint folder (recursive)
      python upload_to_sharepoint.py --list-remote-files --remote-folder SCETS/test_auto --recursive
 
 Token acquisition strategy (best-effort):

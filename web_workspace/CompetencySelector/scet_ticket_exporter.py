@@ -4,14 +4,14 @@
 """
 SCET ticket export module.
 
-用途：
-1) 被 main.py 调用：当监控到 Jira ticket 创建/更新时，下载对应 ticket 的完整内容到本地 JSON
-2) 独立调试：可手动指定 --browse-url 下载单个 ticket
+Usage:
+1) Called by main.py: when Jira ticket creation/update is detected, download full ticket content into local JSON.
+2) Standalone debugging: manually specify --browse-url to download a single ticket.
 
-说明：
-- 导出内容包含：
-  - issue 主体（含 expand）
-  - comments / worklogs / changelog 分页数据（尽量拉全）
+Notes:
+- Exported content includes:
+  - Main issue payload (with expand)
+  - Paginated comments / worklogs / changelog data (as complete as possible)
 
 python scet_ticket_exporter.py --browse-url [SCET Ticket URL]
 
@@ -34,7 +34,7 @@ def parse_browse_url(browse_url: str) -> Dict[str, str]:
 
     m = re.match(r"^(https?://[^/]+)/browse/([A-Za-z][A-Za-z0-9_]*-\d+)$", browse_url.strip())
     if not m:
-        raise ValueError(f"无法解析 browse URL: {browse_url}")
+        raise ValueError(f"Unable to parse browse URL: {browse_url}")
     return {"base_url": m.group(1), "issue_key": m.group(2)}
 
 
@@ -59,9 +59,9 @@ def http_get_text(url: str, token: str, timeout: int = 60) -> str:
             body = e.read().decode("utf-8", errors="replace")
         except Exception:
             pass
-        raise RuntimeError(f"HTTP {e.code} 请求失败: {url}\n响应: {body}") from e
+        raise RuntimeError(f"HTTP {e.code} request failed: {url}\nResponse: {body}") from e
     except error.URLError as e:
-        raise RuntimeError(f"网络请求失败: {url}\n原因: {e.reason}") from e
+        raise RuntimeError(f"Network request failed: {url}\nReason: {e.reason}") from e
 
 
 def http_get_json(url: str, token: str, timeout: int = 60) -> Any:
@@ -71,10 +71,10 @@ def http_get_json(url: str, token: str, timeout: int = 60) -> Any:
 
 def fetch_paginated(url: str, token: str, item_keys: List[str], page_size: int = 100) -> Dict[str, Any]:
     """
-    拉取 Jira 常见分页接口数据。
-    典型分页字段:
+    Fetch paginated data from common Jira APIs.
+    Typical pagination fields:
       - startAt, maxResults, total
-      - 数据数组字段可能是 values / comments / worklogs / histories
+      - Data array keys may be values / comments / worklogs / histories
     """
     start_at = 0
     all_items: List[Any] = []
@@ -139,7 +139,7 @@ def fetch_issue_data(base_url: str, issue_key: str, token: str) -> Dict[str, Any
     api_v2 = f"{base_url.rstrip('/')}/rest/api/2"
     api_v3 = f"{base_url.rstrip('/')}/rest/api/3"
 
-    # 1) 主 issue 数据
+    # 1) Main issue data
     expand = "names,schema,operations,editmeta,changelog,renderedFields,versionedRepresentations"
     issue_url = f"{api_v2}/issue/{issue_key}?expand={parse.quote(expand, safe=',')}"
     issue = http_get_json(issue_url, token)
@@ -156,23 +156,23 @@ def fetch_issue_data(base_url: str, issue_key: str, token: str) -> Dict[str, Any
         "warnings": [],
     }
 
-    # 2) comments 分页
+    # 2) comments pagination
     try:
         comments_url = f"{api_v2}/issue/{issue_key}/comment"
         comments = fetch_paginated(comments_url, token, item_keys=["comments", "values"])
         result["extras"]["comments"] = comments
     except Exception as e:
-        result["warnings"].append(f"comments 拉取失败: {e}")
+        result["warnings"].append(f"Failed to fetch comments: {e}")
 
-    # 3) worklogs 分页
+    # 3) worklogs pagination
     try:
         worklogs_url = f"{api_v2}/issue/{issue_key}/worklog"
         worklogs = fetch_paginated(worklogs_url, token, item_keys=["worklogs", "values"])
         result["extras"]["worklogs"] = worklogs
     except Exception as e:
-        result["warnings"].append(f"worklogs 拉取失败: {e}")
+        result["warnings"].append(f"Failed to fetch worklogs: {e}")
 
-    # 4) changelog 分页（优先 v2，失败尝试 v3）
+    # 4) changelog pagination (prefer v2, fallback to v3)
     changelog_fetched = False
     for base in (api_v2, api_v3):
         try:
@@ -185,7 +185,7 @@ def fetch_issue_data(base_url: str, issue_key: str, token: str) -> Dict[str, Any
             continue
 
     if not changelog_fetched:
-        result["warnings"].append("changelog 分页接口不可用，已保留 issue.expand.changelog 中返回的数据（如有）。")
+        result["warnings"].append("Changelog pagination API unavailable; kept data returned by issue.expand.changelog (if any).")
 
     return result
 
@@ -198,12 +198,12 @@ def save_json(path: str, data: Dict[str, Any]) -> None:
 
 def export_issue_to_file(base_url: str, issue_key: str, token: str, output_dir: str = DEFAULT_OUTPUT_DIR) -> str:
     """
-    下载指定 issue 并保存到 output_dir/{issue_key}.json
-    返回：输出文件绝对路径（str）
+    Download the specified issue and save it to output_dir/{issue_key}.json
+    Returns: absolute output file path (str)
     """
     safe_issue_key = issue_key.strip()
     if not safe_issue_key:
-        raise ValueError("issue_key 不能为空")
+        raise ValueError("issue_key cannot be empty")
 
     data = fetch_issue_data(base_url, safe_issue_key, token)
     out_dir = Path(output_dir).expanduser().resolve()
@@ -216,7 +216,7 @@ def export_issue_to_file(base_url: str, issue_key: str, token: str, output_dir: 
 
 def export_issue_by_browse_url(browse_url: str, token: str, output_dir: str = DEFAULT_OUTPUT_DIR) -> str:
     """
-    通过 browse URL 下载 ticket 并保存到本地 JSON。
+    Download a ticket by browse URL and save it to local JSON.
     """
     parsed = parse_browse_url(browse_url)
     return export_issue_to_file(
@@ -229,9 +229,9 @@ def export_issue_by_browse_url(browse_url: str, token: str, output_dir: str = DE
 
 def resolve_jira_token(cli_token: str) -> str:
     """
-    token 获取策略（用于独立调试）：
-    1) 优先使用 --token
-    2) 若未传，则从环境变量中查找
+    Token resolution strategy (for standalone debugging):
+    1) Prefer --token
+    2) If not provided, read from environment variables
     """
     token = (cli_token or "").strip()
     if token:
@@ -241,14 +241,14 @@ def resolve_jira_token(cli_token: str) -> str:
     if env_token:
         return env_token
 
-    raise RuntimeError(f"缺少 Jira token。请通过 --token 传入，或设置环境变量: {ENV_EXTERNAL_JIRA_TOKEN}")
+    raise RuntimeError(f"Missing Jira token. Pass via --token or set environment variable: {ENV_EXTERNAL_JIRA_TOKEN}")
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="下载单个 Jira ticket 数据并保存为 JSON")
+    parser = argparse.ArgumentParser(description="Download a single Jira ticket and save it as JSON")
     parser.add_argument("--browse-url", required=True, help="Jira issue browse URL")
-    parser.add_argument("--token", default="", help="Jira Bearer Token（可选；不传则自动从环境变量读取）")
-    parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR, help="输出目录")
+    parser.add_argument("--token", default="", help="Jira Bearer Token (optional; if omitted, read from environment variable)")
+    parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR, help="Output directory")
     return parser.parse_args()
 
 
@@ -257,10 +257,10 @@ def main() -> int:
         args = parse_args()
         token = resolve_jira_token(args.token)
         out_file = export_issue_by_browse_url(args.browse_url, token, args.output_dir)
-        print(f"[ok] 导出完成: {out_file}")
+        print(f"[ok] Export completed: {out_file}")
         return 0
     except Exception as e:
-        print(f"[error] 执行失败: {e}", file=sys.stderr)
+        print(f"[error] Execution failed: {e}", file=sys.stderr)
         return 1
 
 if __name__ == "__main__":

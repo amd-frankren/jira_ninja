@@ -7,8 +7,8 @@ Production-ready backend:
   • POST /api/fetch-ticket → fetches SCET ticket via JIRA API or SharePoint (Graph API)
   • POST /api/feedback → appends user correction to feedback_logs.json
 
-部署主機 : 10.95.37.121
-使用者連結: http://10.95.37.121:5000
+Deployment host: 10.95.37.121
+User access URL: http://10.95.37.121:5000
 
 Run (development):
     python server.py

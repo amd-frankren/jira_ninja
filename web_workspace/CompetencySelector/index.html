@@ -18,16 +18,16 @@
         const { useState } = React;
 
         // ==========================================
-        // 🔧 API 路徑配置 (IT Modification Block)
-        // 所有金鑰與憑證請設定於伺服器端 .env 檔案，
-        // 前端僅使用相對路徑，不暴露任何敏感資訊。
+        // 🔧 API path configuration (IT Modification Block)
+        // Configure all keys and credentials in the server-side .env file.
+        // Frontend uses relative paths only and does not expose sensitive info.
         // ==========================================
         const CONFIG = {
             AI_ENDPOINT: "/api/ai",          // Proxied through Python server (server.py)
             FEEDBACK_ENDPOINT: "/api/feedback"
         };
 
-        // --- 完整選項資料 ---
+        // --- Full option dataset ---
         const Q1_OPTIONS = [
             { id: "a", label: "[3rd Party] Issue caused by a third-party component." },
             { id: "b", label: "[Firmware] Firmware coding errors or functional defects (NOT where the fix is implemented)." },
@@ -71,7 +71,7 @@
             const [isFetching, setIsFetching] = useState(false);
             const [fetchedTicketId, setFetchedTicketId] = useState("");
 
-            // --- AI 分析邏輯 ---
+            // --- AI analysis logic ---
             const handleAI = async () => {
                 if (!inputText.trim()) return;
                 setIsAnalyzing(true);
@@ -160,7 +160,7 @@
                 setIsAnalyzing(false);
             };
 
-            // --- 提交反饋 ---
+            // --- Submit feedback ---
             const submitFeedback = async () => {
                 if (!correctionText.trim()) return;
                 try {
