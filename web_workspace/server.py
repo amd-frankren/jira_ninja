@@ -37,7 +37,7 @@ DEFAULT_MAX_TOKENS = int(os.getenv("WEBUI_LLM_MAX_TOKENS", "1200"))
 KNOWLEDGE_STORE_PATH = Path("knowledge_store.json")
 
 MCP_SERVERS: Dict[str, Dict[str, Any]] = {
-    "scet": {
+    "jira_external": {
         "url": os.getenv("SCET_MCP_URL", "http://127.0.0.1:8000/mcp"),
         "auth_token": os.getenv("SCET_MCP_AUTH_TOKEN", ""),
     },
@@ -354,7 +354,7 @@ def detect_server_hints(user_message: str) -> List[str]:
     picked: List[str] = []
 
     if "scet" in text or re.search(r"\bscet-\d+\b", text):
-        picked.append("scet")
+        picked.append("jira_external")
     if "internal" in text or "内网" in text or "plat" in text:
         picked.append("jira_internal")
 
@@ -469,7 +469,7 @@ def write_knowledge_items(items: List[Dict[str, Any]]) -> None:
 # Agent core
 # -----------------------------
 SYSTEM_PROMPT = """你是一个 Jira Ticket 问答助手，可调用 MCP 工具。
-你可以使用来自 scet、jira_internal 两个 MCP server 的工具。
+你可以使用来自 jira_external、jira_internal 两个 MCP server 的工具。
 
 规则：
 1) 优先通过工具获取事实，不要编造。
@@ -554,7 +554,7 @@ async def run_agent_stream(
             else:
                 ask_user = {
                     "question": "当前可用工具较多，请先选择要查询的数据源",
-                    "options": ["scet", "jira_internal"],
+                    "options": ["jira_external", "jira_internal"],
                 }
                 state.pending_question = ask_user
                 state.messages.append({"role": "assistant", "content": f"需要你补充信息：{ask_user['question']}"})
@@ -628,7 +628,7 @@ async def run_agent_stream(
                 # prefer SCET first, fallback to jira_internal when SCET fails/not found.
                 if is_issue_fetch_tool(tool_name):
                     route_plan: List[Tuple[str, str]] = []
-                    for preferred_server in ("scet", "jira_internal"):
+                    for preferred_server in ("jira_external", "jira_internal"):
                         if preferred_server not in mcp_sessions:
                             continue
                         real_tool_name = resolve_issue_tool_name_for_server(

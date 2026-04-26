@@ -46,7 +46,7 @@ jira_ticket_webapp/
 
 你需要先确保这几个 MCP server 已可访问：
 
-- `http://127.0.0.1:8000/mcp`（scet）
+- `http://127.0.0.1:8000/mcp`（jira_external）
 - `http://127.0.0.1:8002/mcp`（jira_internal）
 
 同时需要 LLM 网关环境变量：
