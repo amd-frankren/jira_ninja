@@ -1,0 +1,623 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AMD Competency Selector (Full Version)</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React & Babel -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="bg-slate-50 text-slate-800 font-sans selection:bg-blue-100">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState } = React;
+
+        // ==========================================
+        // 🔧 API 路徑配置 (IT Modification Block)
+        // 所有金鑰與憑證請設定於伺服器端 .env 檔案，
+        // 前端僅使用相對路徑，不暴露任何敏感資訊。
+        // ==========================================
+        const CONFIG = {
+            AI_ENDPOINT: "/api/ai",          // Proxied through Python server (server.py)
+            FEEDBACK_ENDPOINT: "/api/feedback"
+        };
+
+        // --- 完整選項資料 ---
+        const Q1_OPTIONS = [
+            { id: "a", label: "[3rd Party] Issue caused by a third-party component." },
+            { id: "b", label: "[Firmware] Firmware coding errors or functional defects (NOT where the fix is implemented)." },
+            { id: "c", label: "[CPU] Silicon design defects." },
+            { id: "d", label: "[Platform Hardware] Platform-level hardware design defects." },
+            { id: "e", label: "[Tool] Design errors originating from tools." },
+            { id: "f", label: "[SI] Simulation model errors or defects." },
+            { id: "g", label: "[OS] OS-related issues (e.g., kernel, Windows drivers)." },
+            { id: "h", label: "[Electrical Validation] Errors in electrical validation guidance." },
+            { id: "i", label: "[Design Collateral] Defects or gaps in documentation or design collateral." },
+            { id: "j", label: "[Design Review] Applicable to design review tickets (not issue-related)." },
+            { id: "k", label: "[Others] Items not covered above (e.g., CND, works as designed, customer education)." },
+        ];
+
+        const Q2_OPTIONS_MAP = {
+            'a': ['[3rd party] Compliance test tool', '[3rd Party] CXL', '[3rd party] GPU card', '[3rd Party] IBV Tools', '[3rd party] Memory', '[3rd party] NIC card', '[3rd party] Others', '[3rd Party] Redriver', '[3rd Party] Retimer', '[3rd party] Storage (NVMe, SATA, M.2)'],
+            'b': ['[Firmware] Agesa/ ABL', '[Firmware] AGESA/ CPM', '[Firmware] Agesa/ DXIO', '[Firmware] Agesa/ FCH', '[Firmware] Agesa/ Hotplug', '[Firmware] Agesa/ MPIO', '[Firmware] Agesa/ Others', '[Firmware] Agesa/ PSP', '[Firmware] Agesa/ PSP /ASP 2.0', '[Firmware] Agesa/ RAS', '[Firmware] Agesa/ Security', '[Firmware] Agesa/ SMU', '[Firmware] Agesa/ UEFI', '[Firmware] AMD EDK', '[Firmware] APML', '[Firmware] BIOS Building Issue', '[Firmware] BIOS/CPLD/FPGA', '[Firmware] Core Boot', '[Firmware] Customer Platform', '[Firmware] IBV firmware BIOS', '[Firmware] IBV firmware BMC', '[Firmware] Open BMC', '[Firmware] Open SIL'],
+            'c': ['[CPU] Core', '[CPU] CXL', '[CPU] DDR', '[CPU] DF', '[CPU] FCH', '[CPU] I2C/I3C/SMBUS', '[CPU] JTAG', '[CPU] Others', '[CPU] PCIe', '[CPU] Power', '[CPU] SATA', '[CPU] SPI/eSPI', '[CPU] SVI Bus', '[CPU] USB', '[CPU] XGMI'],
+            'd': ['[Platform Hardware] CRB', '[Platform Hardware] DDR', '[Platform Hardware] FPGA', '[Platform Hardware] I2C/I3C/SMBUS', '[Platform Hardware] JTAG', '[Platform Hardware] Mechanical', '[Platform Hardware] Others', '[Platform Hardware] PCIe', '[Platform Hardware] Power', '[Platform Hardware] SATA', '[Platform Hardware] SPI/eSPI', '[Platform Hardware] SVI Bus', '[Platform Hardware] Thermal', '[Platform Hardware] USB', '[Platform Hardware] XGMI'],
+            'e': ['[Tool] AMD Checker', '[Tool] AMD CPR', '[Tool] AMD CXL Validation Tool (CVT)', '[Tool] AMD Debug Tool (Go-Pi, ADDC, etc)', '[Tool] AMD Debug Tool (HDT/ HDS/ Wombat/ Glider)', '[Tool] AMD Marginning Tool (Memeye/ AMDXIO)', '[Tool] AMD Net Tool', '[Tool] AMD Performance Tool (uPerf/Multievent)', '[Tool] AMD Power Tool (SDLE)', '[Tool] AMD RAS Tool (Error Injection/ MEDT)', '[Tool] AMD Server Schematic Checker', '[Tool] AMD Stardust', '[Tool] AMD Stress Tool (ASST)', '[Tool] AMD Thermal Tool (AMPTTK/ AVT)', '[Tool] Non-AMD tool', '[Tool] Others', '[Tool] Power Test Kit - LoadSlammer', '[Tool] ProGrAnalog LoadSlammer'],
+            'f': ['[SI] Impedance/loss test report review', '[SI] Others', '[SI] S2eye tool', '[SI] SATA', '[SI] Seasim tool', '[SI] Simulation report review', '[SI] USB'],
+            'g': ['[OS] Driver', '[OS] fix', '[OS] kernel', '[OS] patch'],
+            'h': ['[Electrical Validation] CXL', '[Electrical Validation] DDR', '[Electrical Validation] I2C/I3C/SMBUS', '[Electrical Validation] Others', '[Electrical Validation] PCIe', '[Electrical Validation] SATA', '[Electrical Validation] SPI/eSPI', '[Electrical Validation] SVI Bus', '[Electrical Validation] USB', '[Electrical Validation] XGMI'],
+            'i': ['[Design Collateral] Flotherm Thermal Model', '[Design Collateral] Debug handbook', '[Design Collateral] Electrical datasheet', '[Design Collateral] Functional datasheet', '[Design Collateral] Infrastructure Roadmap', '[Design Collateral] Interlock', '[Design Collateral] Layout checklist', '[Design Collateral] MBDG', '[Design Collateral] Mechanical Specification and User Guidance', '[Design Collateral] Others', '[Design Collateral] Power and Thermal Data Sheet', '[Design Collateral] PPOG', '[Design Collateral] PPR', '[Design Collateral] Schematic checklist', '[Design Collateral] SI Checklist', '[Design Collateral] SI model user guide', '[Design Collateral] SVM', '[Design Collateral] Technical Advisory', '[Design Collateral] Thermal Design Guide'],
+            'j': ['[Design Review] BIOS review', '[Design Review] Block diagram review', '[Design Review] E2E topology review', '[Design Review] Firmware bring-up check list review', '[Design Review] HW bring-up check list review', '[Design Review] PCB Layout review', '[Design Review] PCB stack-up review', '[Design Review] Platform Config. review', '[Design Review] Power test result review', '[Design Review] Schematic review'],
+            'k': ['[Others]', '[Others] Can Not Duplicate', '[Others] Customer Education Awareness/Engagement', '[Others] Customer Training Content Enhancement', '[Others] Industry (CXL Consortium, PCI-SIG)', '[Others] Issue Unrelated to AMD', '[Others] New Feature Enhancement', '[Others] No-hit (Validation step error or something should not happen)', '[Others] System/Board level/CPU Single Case', '[Others] Work as designed (Customer normal behavior)']
+        };
+
+        function App() {
+            const [page, setPage] = useState(1);
+            const [inputText, setInputText] = useState("");
+            const [isAnalyzing, setIsAnalyzing] = useState(false);
+            const [q1, setQ1] = useState(null);
+            const [q2, setQ2] = useState(null);
+            const [reasoning, setReasoning] = useState("");
+            const [feedbackSent, setFeedbackSent] = useState(false);
+            const [correctionText, setCorrectionText] = useState("");
+            const [copied, setCopied] = useState(false);
+            const [aiInputMode, setAiInputMode] = useState("text"); // "text" | "jira"
+            const [jiraUrl, setJiraUrl] = useState("");
+            const [isFetching, setIsFetching] = useState(false);
+            const [fetchedTicketId, setFetchedTicketId] = useState("");
+
+            // --- AI 分析邏輯 ---
+            const handleAI = async () => {
+                if (!inputText.trim()) return;
+                setIsAnalyzing(true);
+                setFeedbackSent(false);
+
+                const MAX_RETRIES = 2;
+                const RETRY_DELAY_MS = 3000;
+                let lastErrMsg = "";
+
+                for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+                  try {
+                    if (attempt > 1) {
+                        await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
+                    }
+
+                    const res = await fetch(CONFIG.AI_ENDPOINT, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            messages: [
+                                { role: "system", content: "You are an AMD expert. Based on the description, classify into Q1 and Q2. Return JSON: {q1_id, q2_text, reasoning}" },
+                                { role: "user", content: inputText }
+                            ],
+                            response_format: { type: "json_object" }
+                        })
+                    });
+
+                    // Surface server-side errors with a meaningful message
+                    if (!res.ok) {
+                        let errMsg = `Server error: HTTP ${res.status}`;
+                        try {
+                            const errBody = await res.json();
+                            errMsg = errBody.error || errMsg;
+                            if (errBody.detail) errMsg += `\n\nDetail: ${errBody.detail}`;
+                        } catch (_) {}
+                        // Retry on 504 (timeout) or 502 (upstream error)
+                        if ((res.status === 504 || res.status === 502) && attempt < MAX_RETRIES) {
+                            lastErrMsg = errMsg;
+                            continue;
+                        }
+                        alert(`AI Analysis Failed.\n\n${errMsg}\n\nPlease check the server .env configuration or select manually.`);
+                        setIsAnalyzing(false);
+                        return;
+                    }
+
+                    const data = await res.json();
+                    const aiContent = JSON.parse(data.choices[0].message.content.replace(/```json|```/g, "").trim());
+
+                    // ── Frontend enforcement: q2 MUST be from the valid list ──
+                    const validQ1Ids = Object.keys(Q2_OPTIONS_MAP);
+                    const resolvedQ1 = validQ1Ids.includes(aiContent.q1_id) ? aiContent.q1_id : "k";
+                    const validQ2List = Q2_OPTIONS_MAP[resolvedQ1] || [];
+
+                    let resolvedQ2 = aiContent.q2_text || "";
+
+                    if (validQ2List.length > 0 && !validQ2List.includes(resolvedQ2)) {
+                        // Score each valid option by word-overlap against AI text + original input
+                        const probe = (resolvedQ2 + " " + inputText).toLowerCase();
+                        const probeWords = new Set(probe.split(/[\s,.\-_/()[\]]+/).filter(w => w.length > 2));
+                        let best = { score: -1, q2: validQ2List[0] };
+                        for (const opt of validQ2List) {
+                            const optWords = opt.toLowerCase().split(/[\s,.\-_/()[\]]+/).filter(w => w.length > 2);
+                            const score = optWords.reduce((n, w) => n + (probeWords.has(w) ? 1 : 0), 0);
+                            if (score > best.score) best = { score, q2: opt };
+                        }
+                        resolvedQ2 = best.q2;
+                        console.warn("[Competency Selector] AI returned out-of-list q2_text; snapped to:", resolvedQ2);
+                    }
+                    // ──────────────────────────────────────────────────────────
+
+                    setQ1(resolvedQ1);
+                    setQ2(resolvedQ2);
+                    setReasoning(aiContent.reasoning);
+                    setPage(3);
+                    setIsAnalyzing(false);
+                    return; // success – exit retry loop
+
+                  } catch (e) {
+                    lastErrMsg = e.message;
+                    if (attempt === MAX_RETRIES) {
+                        alert(`AI Analysis Failed after ${MAX_RETRIES} attempts.\n\n${lastErrMsg}\n\nPlease select manually.`);
+                    }
+                  }
+                } // end retry loop
+
+                setIsAnalyzing(false);
+            };
+
+            // --- 提交反饋 ---
+            const submitFeedback = async () => {
+                if (!correctionText.trim()) return;
+                try {
+                    await fetch(CONFIG.FEEDBACK_ENDPOINT, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            original_input: inputText,
+                            ai_q1: q1,
+                            ai_output: q2,
+                            correction_reason: correctionText.trim()
+                        })
+                    });
+                    setFeedbackSent(true);
+                } catch (e) {
+                    alert("Feedback transmission failed.");
+                }
+            };
+
+            // --- JIRA Ticket Fetch & Classify ---
+            const handleFetchAndClassify = async () => {
+                if (!jiraUrl.trim()) return;
+                setIsFetching(true);
+                setFeedbackSent(false);
+
+                const MAX_RETRIES = 2;
+                const RETRY_DELAY_MS = 3000;
+
+                try {
+                    // Step 1: Fetch ticket JSON from SharePoint
+                    const fetchRes = await fetch("/api/fetch-ticket", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ ticket_id: jiraUrl.trim() })
+                    });
+
+                    if (!fetchRes.ok) {
+                        let errMsg = `Server error: HTTP ${fetchRes.status}`;
+                        try {
+                            const errBody = await fetchRes.json();
+                            errMsg = errBody.error || errMsg;
+                            if (errBody.detail) errMsg += `\n\nDetail: ${errBody.detail}`;
+                        } catch (_) {}
+                        alert(`Failed to fetch ticket.\n\n${errMsg}\n\nPlease paste the root cause manually in the "Paste Description" tab.`);
+                        setIsFetching(false);
+                        return;
+                    }
+
+                    const fetchData = await fetchRes.json();
+                    const extractedText = fetchData.extracted_text;
+                    const ticketId = fetchData.ticket_id;
+
+                    setFetchedTicketId(ticketId);
+                    setInputText(extractedText); // store for feedback
+
+                    // Step 2: AI classify with extracted text
+                    let lastErrMsg = "";
+                    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+                        try {
+                            if (attempt > 1) await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
+
+                            const res = await fetch(CONFIG.AI_ENDPOINT, {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({
+                                    messages: [
+                                        { role: "system", content: "You are an AMD expert. Based on the SCET ticket content, classify into Q1 and Q2. Return JSON: {q1_id, q2_text, reasoning}" },
+                                        { role: "user", content: `[${ticketId}]\n${extractedText}` }
+                                    ],
+                                    response_format: { type: "json_object" }
+                                })
+                            });
+
+                            if (!res.ok) {
+                                let errMsg = `Server error: HTTP ${res.status}`;
+                                try {
+                                    const errBody = await res.json();
+                                    errMsg = errBody.error || errMsg;
+                                    if (errBody.detail) errMsg += `\n\nDetail: ${errBody.detail}`;
+                                } catch (_) {}
+                                if ((res.status === 504 || res.status === 502) && attempt < MAX_RETRIES) {
+                                    lastErrMsg = errMsg;
+                                    continue;
+                                }
+                                alert(`AI Analysis Failed.\n\n${errMsg}\n\nPlease check the server configuration.`);
+                                setIsFetching(false);
+                                return;
+                            }
+
+                            const data = await res.json();
+                            const aiContent = JSON.parse(data.choices[0].message.content.replace(/```json|```/g, "").trim());
+
+                            // Frontend enforcement (same as handleAI)
+                            const validQ1Ids = Object.keys(Q2_OPTIONS_MAP);
+                            const resolvedQ1 = validQ1Ids.includes(aiContent.q1_id) ? aiContent.q1_id : "k";
+                            const validQ2List = Q2_OPTIONS_MAP[resolvedQ1] || [];
+                            let resolvedQ2 = aiContent.q2_text || "";
+
+                            if (validQ2List.length > 0 && !validQ2List.includes(resolvedQ2)) {
+                                const probe = (resolvedQ2 + " " + extractedText).toLowerCase();
+                                const probeWords = new Set(probe.split(/[\s,.\-_/()[\]]+/).filter(w => w.length > 2));
+                                let best = { score: -1, q2: validQ2List[0] };
+                                for (const opt of validQ2List) {
+                                    const optWords = opt.toLowerCase().split(/[\s,.\-_/()[\]]+/).filter(w => w.length > 2);
+                                    const score = optWords.reduce((n, w) => n + (probeWords.has(w) ? 1 : 0), 0);
+                                    if (score > best.score) best = { score, q2: opt };
+                                }
+                                resolvedQ2 = best.q2;
+                            }
+
+                            setQ1(resolvedQ1);
+                            setQ2(resolvedQ2);
+                            setReasoning(aiContent.reasoning);
+                            setPage(3);
+                            setIsFetching(false);
+                            return;
+
+                        } catch (e) {
+                            lastErrMsg = e.message;
+                            if (attempt === MAX_RETRIES) {
+                                alert(`AI Analysis Failed after ${MAX_RETRIES} attempts.\n\n${lastErrMsg}\n\nPlease try again.`);
+                            }
+                        }
+                    }
+                } catch (e) {
+                    alert(`Error: ${e.message}`);
+                }
+
+                setIsFetching(false);
+            };
+
+            const copyToClipboard = () => {
+                const textToCopy = `${Q1_OPTIONS.find(o => o.id === q1)?.label}\n${q2}`;
+                navigator.clipboard.writeText(textToCopy).then(() => {
+                    setCopied(true);
+                    setTimeout(() => setCopied(false), 2500);
+                }).catch(() => {
+                    // Fallback for browsers that don't support clipboard API
+                    const el = document.createElement('textarea');
+                    el.value = textToCopy;
+                    document.body.appendChild(el);
+                    el.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(el);
+                    setCopied(true);
+                    setTimeout(() => setCopied(false), 2500);
+                });
+            };
+
+            const reset = () => {
+                setPage(1);
+                setInputText("");
+                setQ1(null);
+                setQ2(null);
+                setReasoning("");
+                setFeedbackSent(false);
+                setCorrectionText("");
+                setCopied(false);
+                setJiraUrl("");
+                setFetchedTicketId("");
+                setIsFetching(false);
+            };
+
+            return (
+                <div className="min-h-screen flex flex-col">
+                    {/* Header */}
+                    <header className="bg-white border-b border-slate-200 p-4 sticky top-0 z-20 shadow-sm">
+                        <div className="max-w-7xl mx-auto flex justify-between items-center">
+                            <h1 className="text-xl font-bold flex items-center gap-2">
+                                <span className="text-blue-600">✓</span> Competency Selector
+                                <span className="text-[10px] bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full uppercase ml-1">Internal AI</span>
+                            </h1>
+                            <div className="text-xs font-bold text-slate-400 bg-slate-100 px-3 py-1 rounded-full uppercase tracking-widest">
+                                PAGE {page} OF 3
+                            </div>
+                        </div>
+                    </header>
+
+                    <main className="max-w-7xl mx-auto p-4 md:p-6 w-full flex-1">
+                        {/* --- PAGE 1: AI Input & Manual Q1 --- */}
+                        {page === 1 && (
+                            <div className="space-y-6 animate-fadeIn">
+                                {/* AI Section */}
+                                <div className="bg-gradient-to-r from-indigo-50 to-purple-50 border border-purple-100 p-5 rounded-2xl shadow-sm">
+                                    <h3 className="font-bold text-purple-900 mb-3 flex items-center gap-2">✨ AI Auto-Classify</h3>
+
+                                    {/* Mode Tabs */}
+                                    <div className="flex gap-2 mb-4">
+                                        <button
+                                            onClick={() => setAiInputMode("text")}
+                                            className={`text-[11px] font-black px-4 py-1.5 rounded-full border-2 transition-all ${aiInputMode === "text" ? "bg-purple-600 border-purple-600 text-white" : "bg-white border-purple-200 text-purple-600 hover:border-purple-400"}`}
+                                        >
+                                            ✏ Paste Root Cause
+                                        </button>
+                                        <button
+                                            onClick={() => setAiInputMode("jira")}
+                                            className={`text-[11px] font-black px-4 py-1.5 rounded-full border-2 transition-all ${aiInputMode === "jira" ? "bg-purple-600 border-purple-600 text-white" : "bg-white border-purple-200 text-purple-600 hover:border-purple-400"}`}
+                                        >
+                                            🔗 JIRA Ticket URL
+                                        </button>
+                                    </div>
+
+                                    {/* Mode: Paste Description */}
+                                    {aiInputMode === "text" && (
+                                        <div className="flex flex-col md:flex-row gap-3">
+                                            <textarea
+                                                value={inputText}
+                                                onChange={(e) => setInputText(e.target.value)}
+                                                placeholder="e.g. Issue traced back to Agesa DXIO initialization bug..."
+                                                className="flex-1 rounded-xl p-4 text-sm h-24 border-purple-200 focus:ring-4 focus:ring-purple-100 focus:border-purple-500 outline-none transition-all shadow-inner"
+                                            />
+                                            <button
+                                                onClick={handleAI}
+                                                disabled={isAnalyzing || !inputText.trim()}
+                                                className="bg-purple-600 text-white px-8 py-4 rounded-xl font-black text-sm hover:bg-purple-700 disabled:bg-purple-200 shadow-lg active:scale-95 transition-all"
+                                            >
+                                                {isAnalyzing ? "ANALYZING..." : "AUTO CLASSIFY"}
+                                            </button>
+                                        </div>
+                                    )}
+
+                                    {/* Mode: JIRA Ticket URL */}
+                                    {aiInputMode === "jira" && (
+                                        <div>
+                                            <p className="text-xs text-purple-700 mb-3 tracking-wide">
+                                                Enter a JIRA Ticket URL. The system will auto-fetch content from SharePoint and classify it.
+                                            </p>
+                                            <div className="flex flex-col md:flex-row gap-3">
+                                                <input
+                                                    type="text"
+                                                    value={jiraUrl}
+                                                    onChange={(e) => setJiraUrl(e.target.value)}
+                                                    onKeyDown={(e) => { if (e.key === "Enter" && jiraUrl.trim() && !isFetching) handleFetchAndClassify(); }}
+                                                    placeholder="https://ontrack.amd.com/browse/SCET-1234"
+                                                    className="flex-1 rounded-xl p-4 text-sm border-purple-200 focus:ring-4 focus:ring-purple-100 focus:border-purple-500 outline-none transition-all shadow-inner bg-white"
+                                                />
+                                                <button
+                                                    onClick={handleFetchAndClassify}
+                                                    disabled={isFetching || !jiraUrl.trim()}
+                                                    className="bg-purple-600 text-white px-8 py-4 rounded-xl font-black text-sm hover:bg-purple-700 disabled:bg-purple-200 shadow-lg active:scale-95 transition-all whitespace-nowrap"
+                                                >
+                                                    {isFetching ? "FETCHING..." : "FETCH & CLASSIFY"}
+                                                </button>
+                                            </div>
+                                            <p className="text-[10px] text-purple-400 mt-2">
+                                                Supported: full URL (https://ontrack.amd.com/browse/SCET-1234) or bare ID (e.g. SCET-1234)
+                                            </p>
+                                        </div>
+                                    )}
+                                </div>
+
+                                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                                    {/* Left Column: Context & Example */}
+                                    <div className="lg:col-span-4">
+                                        <div className="bg-blue-50 border border-blue-100 p-6 rounded-2xl h-full shadow-sm">
+                                            <span className="inline-block bg-blue-600 text-white text-[10px] font-black px-2 py-0.5 rounded uppercase mb-3 tracking-widest shadow-sm">Manual Selection</span>
+                                            <h2 className="text-xl font-black mb-3 text-slate-900 leading-tight">Root cause and first-level component?</h2>
+                                            <p className="text-xs text-slate-500 mb-6 italic leading-relaxed">Manual selection ensures accurate categorization if AI results are uncertain.</p>
+                                            
+                                            <div className="bg-white border-2 border-blue-100 p-4 rounded-2xl shadow-sm text-slate-700 italic text-xs leading-relaxed relative">
+                                                <div className="absolute -top-3 left-4 bg-blue-600 text-white text-[9px] font-bold px-2 py-0.5 rounded-full">EXAMPLE</div>
+                                                If the root cause is a third-party component (e.g. memory PMIC), the competency should be assigned to the third-party vendor—even if AMD adopts a temporary workaround.
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* Right Column: Q1 Options Grid */}
+                                    <div className="lg:col-span-8 flex flex-col">
+                                        <h3 className="text-[10px] font-black text-slate-400 uppercase mb-3 tracking-widest px-1">Select an answer for Q1:</h3>
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2 flex-grow">
+                                            {Q1_OPTIONS.map(opt => (
+                                                <div 
+                                                    key={opt.id}
+                                                    onClick={() => { setQ1(opt.id); setReasoning(""); }}
+                                                    className={`flex items-start p-4 rounded-xl border-2 cursor-pointer transition-all duration-200 group ${q1 === opt.id ? 'border-blue-500 bg-blue-50 shadow-md' : 'border-slate-200 bg-white hover:border-blue-300 hover:shadow-sm'}`}
+                                                >
+                                                    <div className={`w-5 h-5 rounded-full border-2 mt-0.5 flex items-center justify-center shrink-0 transition-all ${q1 === opt.id ? 'border-blue-600 bg-blue-600' : 'border-slate-300 group-hover:border-blue-400'}`}>
+                                                        {q1 === opt.id && <div className="w-2 h-2 bg-white rounded-full"></div>}
+                                                    </div>
+                                                    <div className={`ml-3 text-sm font-bold transition-all ${q1 === opt.id ? 'text-blue-900' : 'text-slate-700'}`}>
+                                                        <span className="opacity-50 text-[10px] mr-1 uppercase">({opt.id})</span> {opt.label.replace(`[${opt.id.toUpperCase()}]`, '').replace(`(${opt.id})`, '')}
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                        <div className="mt-6 flex justify-end">
+                                            <button 
+                                                onClick={() => setPage(2)}
+                                                disabled={!q1}
+                                                className={`px-10 py-4 rounded-xl font-black text-sm shadow-lg transition-all active:scale-95 ${q1 ? 'bg-blue-600 text-white hover:bg-blue-700' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`}
+                                            >
+                                                NEXT STEP →
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* --- PAGE 2: Q2 Sub-categories --- */}
+                        {page === 2 && (
+                            <div className="animate-fadeIn max-w-5xl mx-auto space-y-6">
+                                <button onClick={() => setPage(1)} className="group flex items-center gap-1 text-slate-400 hover:text-blue-600 text-xs font-black uppercase tracking-widest transition-all">
+                                    <span className="group-hover:-translate-x-1 transition-transform">←</span> Back to Q1
+                                </button>
+                                <div className="bg-white border-2 border-slate-100 p-8 rounded-[2.5rem] shadow-xl">
+                                    <div className="flex items-center gap-3 mb-6">
+                                        <span className="bg-blue-600 text-white text-[10px] font-black px-2 py-0.5 rounded uppercase tracking-widest">Step 2</span>
+                                        <div className="h-px flex-1 bg-slate-100"></div>
+                                        <div className="text-xs text-slate-400 font-bold">Selected: <span className="text-slate-800">{Q1_OPTIONS.find(o => o.id === q1)?.label}</span></div>
+                                    </div>
+                                    <h2 className="text-2xl font-black mb-8 text-slate-900">Select the 2nd layer root cause:</h2>
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                                        {Q2_OPTIONS_MAP[q1]?.map((text, idx) => (
+                                            <div 
+                                                key={idx}
+                                                onClick={() => setQ2(text)}
+                                                className={`flex items-start p-3 rounded-xl border-2 cursor-pointer text-xs font-bold transition-all duration-200 ${q2 === text ? 'border-blue-500 bg-blue-50 shadow-md scale-[1.02]' : 'border-slate-100 bg-slate-50/50 hover:border-blue-200 hover:bg-white'}`}
+                                            >
+                                                <div className={`w-4 h-4 rounded-full border-2 mt-0.5 shrink-0 flex items-center justify-center ${q2 === text ? 'border-blue-600 bg-blue-600' : 'border-slate-300'}`}>
+                                                    {q2 === text && <div className="w-1.5 h-1.5 bg-white rounded-full"></div>}
+                                                </div>
+                                                <span className="ml-3 leading-tight">{text}</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                                <div className="flex justify-end">
+                                    <button 
+                                        onClick={() => setPage(3)}
+                                        disabled={!q2}
+                                        className={`px-12 py-4 rounded-xl font-black text-sm shadow-xl transition-all active:scale-95 ${q2 ? 'bg-blue-600 text-white hover:bg-blue-700' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`}
+                                    >
+                                        VIEW RESULT
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* --- PAGE 3: Final Result --- */}
+                        {page === 3 && (
+                            <div className="animate-fadeIn max-w-3xl mx-auto py-6 space-y-8">
+
+                                {/* Top action buttons */}
+                                <div className="flex items-center justify-between">
+                                    <button
+                                        onClick={reset}
+                                        className="flex items-center gap-2 bg-white border-2 border-slate-200 hover:border-blue-400 text-slate-600 hover:text-blue-700 px-5 py-2.5 rounded-xl font-black text-xs uppercase tracking-widest shadow-sm transition-all active:scale-95"
+                                    >
+                                        ↻ Start New Analysis
+                                    </button>
+                                    {!reasoning && (
+                                        <button
+                                            onClick={() => setPage(2)}
+                                            className="flex items-center gap-2 bg-white border-2 border-slate-200 hover:border-blue-400 text-slate-500 hover:text-blue-700 px-5 py-2.5 rounded-xl font-black text-xs uppercase tracking-widest shadow-sm transition-all active:scale-95"
+                                        >
+                                            ← Edit Q2 Selection
+                                        </button>
+                                    )}
+                                </div>
+
+                                <div className="bg-white border-2 border-green-500 shadow-2xl rounded-[3rem] p-10 text-left relative overflow-hidden">
+                                    <div className="absolute top-0 left-0 w-full h-4 bg-green-500"></div>
+                                    {reasoning
+                                        ? <div className="absolute top-10 right-10 bg-purple-100 text-purple-700 text-[10px] px-3 py-1 rounded-full font-black tracking-widest animate-pulse">
+                                            {fetchedTicketId ? `🔗 ${fetchedTicketId} · AI` : "✨ AI RECOMMENDED"}
+                                          </div>
+                                        : <div className="absolute top-10 right-10 bg-blue-100 text-blue-700 text-[10px] px-3 py-1 rounded-full font-black tracking-widest">✎ MANUALLY SELECTED</div>
+                                    }
+
+                                    {/* Q1 Category */}
+                                    <div className="mb-6 mt-2">
+                                        <label className="text-[10px] text-slate-300 uppercase font-black tracking-[0.2em] block mb-2">Q1 – Root Cause Category</label>
+                                        <div className="text-sm font-bold text-slate-600 bg-slate-50 px-5 py-3 rounded-2xl border-2 border-slate-100">
+                                            {Q1_OPTIONS.find(o => o.id === q1)?.label}
+                                        </div>
+                                    </div>
+
+                                    {/* Q2 Result + Copy */}
+                                    <div className="mb-10">
+                                        <div className="flex items-center justify-between mb-2">
+                                            <label className="text-[10px] text-slate-300 uppercase font-black tracking-[0.2em]">
+                                                {reasoning ? "AI Recommended Competency (Q2)" : "Selected Competency (Q2)"}
+                                            </label>
+                                            <button
+                                                onClick={copyToClipboard}
+                                                className={`flex items-center gap-1.5 text-xs font-black px-4 py-1.5 rounded-xl border-2 transition-all active:scale-95 shadow-sm ${copied ? 'bg-green-100 border-green-300 text-green-700' : 'bg-white border-slate-200 hover:border-green-400 text-slate-500 hover:text-green-700'}`}
+                                            >
+                                                {copied ? "✓ COPIED!" : "⎘ COPY"}
+                                            </button>
+                                        </div>
+                                        <div className="text-3xl font-black text-green-700 bg-green-50/50 p-6 rounded-[2rem] border-2 border-green-100 leading-tight shadow-inner">
+                                            {q2}
+                                        </div>
+                                    </div>
+
+                                    {/* Reasoning Display */}
+                                    {reasoning && (
+                                        <div className="bg-purple-50 p-6 rounded-3xl border-2 border-purple-100 mb-8 relative">
+                                            <div className="absolute -top-3 left-6 bg-purple-600 text-white text-[9px] font-black px-2 py-0.5 rounded-full">WHY AI CHOSE THIS?</div>
+                                            <p className="text-sm text-purple-800 leading-relaxed font-semibold italic">"{reasoning}"</p>
+                                        </div>
+                                    )}
+
+                                    {/* Feedback Loop (Only for AI results) */}
+                                    {reasoning && (
+                                        <div className="border-t-2 border-dashed border-slate-100 pt-8 mt-4">
+                                            {feedbackSent ? (
+                                                <div className="bg-green-100 text-green-700 p-5 rounded-2xl font-black text-center text-sm shadow-sm">
+                                                    ✓ Feedback recorded! Your correction will help improve future AI accuracy.
+                                                </div>
+                                            ) : (
+                                                <div className="space-y-3">
+                                                    <h4 className="text-sm font-bold text-slate-800 flex items-center gap-2">
+                                                        <span className="text-xl">🤔</span> AI classification incorrect?
+                                                    </h4>
+                                                    <p className="text-xs text-slate-500 leading-relaxed">
+                                                        Explain why you think the AI chose incorrectly. Your feedback is stored and automatically used to improve future classifications.
+                                                    </p>
+                                                    <textarea
+                                                        value={correctionText}
+                                                        onChange={(e) => setCorrectionText(e.target.value)}
+                                                        placeholder="e.g. This is actually a CPU PCIe silicon defect, not a Firmware issue. The AGESA patch only worked around the underlying hardware bug..."
+                                                        className="w-full rounded-xl p-4 text-sm h-28 border-2 border-slate-200 focus:ring-4 focus:ring-blue-100 focus:border-blue-400 outline-none transition-all shadow-inner resize-none"
+                                                    />
+                                                    <div className="flex justify-end">
+                                                        <button
+                                                            onClick={submitFeedback}
+                                                            disabled={!correctionText.trim()}
+                                                            className={`px-6 py-3 rounded-xl font-black text-sm transition-all active:scale-95 ${correctionText.trim() ? 'bg-blue-600 text-white hover:bg-blue-700 shadow-md' : 'bg-slate-100 text-slate-400 cursor-not-allowed'}`}
+                                                        >
+                                                            SUBMIT CORRECTION →
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+                                </div>
+                                
+                            </div>
+                        )}
+                    </main>
+
+                    <footer className="p-8 text-center text-slate-300 text-[10px] font-black uppercase tracking-[0.3em]">
+                        Internal Use Only • AMD Chief of Staff Office
+                    </footer>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+    <style>
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+        .animate-fadeIn { animation: fadeIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+    </style>
+</body>
+</html>

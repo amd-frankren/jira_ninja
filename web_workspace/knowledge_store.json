@@ -1,0 +1,21 @@
+{
+  "items": [
+    {
+      "id": "c9600a1b-5769-444b-8ff6-088d9f2fc255",
+      "type": "link",
+      "title": "test2",
+      "content": "",
+      "url": "https://amd.atlassian.net/wiki/spaces/SCPIKMM/pages/edit-v2/1631570524",
+      "updated_at": "2026-04-25T18:47:36+00:00"
+    },
+    {
+      "id": "2088e83a-e9d5-4d3e-8342-f90dc574b00e",
+      "type": "article",
+      "title": "MCP atlassian_configuration guide",
+      "content": "xxxx",
+      "url": "",
+      "updated_at": "2026-04-25T19:08:50+00:00"
+    }
+  ],
+  "updated_at": "2026-04-25T19:17:06+00:00"
+}
