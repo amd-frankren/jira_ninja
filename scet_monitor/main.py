@@ -256,6 +256,26 @@ def _extract_ticket_title_description(exported_file: str) -> tuple[str, str]:
     return clean_title, clean_description
 
 
+def _build_ai_comment(issue_url: str, ticket_text: str) -> str:
+    qa_result = ask_mcp_qa(
+        ticket_url=issue_url,
+        question=ticket_text,
+    )
+
+    if qa_result.pending_question:
+        pending_q = qa_result.pending_question.get("question", "")
+        base_answer = f"AI 需要补充信息后才能继续分析：{pending_q}"
+    else:
+        base_answer = qa_result.answer or "(empty answer from mcp_qa)"
+
+    print(f"[info] final_answer xxx: {qa_result or '(empty)'}")
+
+    prefix = "This comment is AI-generated and for reference only."
+    suffix = "For more AI insights about this issue, please visit http://127.0.0.1:8090/."
+
+    return f"{prefix}\n\n{base_answer}\n\n{suffix}"
+
+
 def parse_args() -> argparse.Namespace:
     # Build CLI argument parser
     parser = argparse.ArgumentParser(
@@ -385,17 +405,12 @@ def main() -> int:
 
                             try:
                                 print(f"[info] Calling mcp_qa with ticket URL: {issue_url or '(empty)'}")
-                                qa_result = ask_mcp_qa(
-                                    ticket_url=issue_url,
-                                    question=ticket_text,
+                                final_answer = _build_ai_comment(
+                                    issue_url=issue_url,
+                                    ticket_text=ticket_text,
                                 )
 
-                                print(f"[info] qa_result: {qa_result or '(empty)'}")
-                                if qa_result.pending_question:
-                                    pending_q = qa_result.pending_question.get("question", "")
-                                    final_answer = f"AI 需要补充信息后才能继续分析：{pending_q}"
-                                else:
-                                    final_answer = qa_result.answer or "(empty answer from mcp_qa)"
+                                print(f"[info] AI final_answer: {final_answer or '(empty)'}")
 
                                 if args.debug_enable_add_comment:
                                     try:
