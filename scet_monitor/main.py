@@ -271,7 +271,7 @@ def _build_ai_comment(issue_url: str, ticket_text: str) -> str:
     print(f"[info] final_answer xxx: {qa_result or '(empty)'}")
 
     prefix = "This comment is AI-generated and for reference only."
-    suffix = "For more AI insights about this issue, please visit http://127.0.0.1:8090/."
+    suffix = "For more AI insights about this issue, please visit http://10.1.65.247:8090/."
 
     return f"{prefix}\n\n{base_answer}\n\n{suffix}"
 
