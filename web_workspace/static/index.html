@@ -374,10 +374,6 @@
             <div class="modal-title" id="kModalTitle">新增内容</div>
             <div class="stack">
               <input id="kTitle" placeholder="标题（必填）" />
-              <select id="kType">
-                <option value="article">article</option>
-                <option value="link">link</option>
-              </select>
               <input id="kUrl" placeholder="链接 URL（可选）" />
               <textarea id="kContent" placeholder="正文内容（可选）"></textarea>
               <div class="actions">
@@ -564,7 +560,6 @@
 
       // -------------------- Knowledge page --------------------
       const kTitleEl = document.getElementById("kTitle");
-      const kTypeEl = document.getElementById("kType");
       const kUrlEl = document.getElementById("kUrl");
       const kContentEl = document.getElementById("kContent");
       const kSaveBtn = document.getElementById("kSaveBtn");
@@ -589,11 +584,18 @@
       function resetKnowledgeForm() {
         editingId = null;
         kTitleEl.value = "";
-        kTypeEl.value = "article";
         kUrlEl.value = "";
         kContentEl.value = "";
         kModalTitle.textContent = "新增内容";
         kEditHint.textContent = "当前模式：新建";
+      }
+
+      function formatUpdatedAt(ts) {
+        const s = String(ts || "").trim();
+        if (!s) return "-";
+        const m = s.match(/^(\d{4}-\d{2}-\d{2})[T\s](\d{2}:\d{2}:\d{2})/);
+        if (m) return `${m[1]} ${m[2]}`;
+        return s;
       }
 
       async function loadKnowledgeList() {
@@ -615,7 +617,7 @@
             div.className = "knowledge-item";
             div.innerHTML = `
               <div class="knowledge-title">${item.title || ""}</div>
-              <div class="knowledge-meta">type: ${item.type || "article"} · updated: ${item.updated_at || "-"}</div>
+              <div class="knowledge-meta">updated: ${formatUpdatedAt(item.updated_at)}</div>
               <div style="margin-bottom: 6px; white-space: pre-wrap;">${item.content || ""}</div>
               ${item.url ? `<div style="margin-bottom:8px;"><a href="${item.url}" target="_blank" style="color:#93c5fd;">${item.url}</a></div>` : ""}
               <div class="actions">
@@ -627,7 +629,6 @@
             div.querySelector('[data-action="edit"]').addEventListener("click", () => {
               editingId = item.id;
               kTitleEl.value = item.title || "";
-              kTypeEl.value = item.type || "article";
               kUrlEl.value = item.url || "";
               kContentEl.value = item.content || "";
               kModalTitle.textContent = "编辑内容";
@@ -672,7 +673,6 @@
       kSaveBtn.addEventListener("click", async () => {
         const payload = {
           title: kTitleEl.value.trim(),
-          type: kTypeEl.value,
           url: kUrlEl.value.trim(),
           content: kContentEl.value.trim(),
         };

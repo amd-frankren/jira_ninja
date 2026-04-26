@@ -757,12 +757,13 @@ async def list_knowledge() -> Dict[str, Any]:
 async def create_knowledge(req: KnowledgeItemInput) -> Dict[str, Any]:
     async with KNOWLEDGE_LOCK:
         items = read_knowledge_items()
+        normalized_url = req.url.strip()
         new_item = {
             "id": str(uuid.uuid4()),
-            "type": req.type.strip() or "article",
+            "type": "link" if normalized_url else "article",
             "title": req.title.strip(),
             "content": req.content.strip(),
-            "url": req.url.strip(),
+            "url": normalized_url,
             "updated_at": now_iso(),
         }
         items.insert(0, new_item)
@@ -778,12 +779,13 @@ async def update_knowledge(item_id: str, req: KnowledgeItemInput) -> Dict[str, A
         if idx < 0:
             raise HTTPException(status_code=404, detail="知识条目不存在")
 
+        normalized_url = req.url.strip()
         items[idx] = {
             "id": item_id,
-            "type": req.type.strip() or "article",
+            "type": "link" if normalized_url else "article",
             "title": req.title.strip(),
             "content": req.content.strip(),
-            "url": req.url.strip(),
+            "url": normalized_url,
             "updated_at": now_iso(),
         }
         write_knowledge_items(items)
