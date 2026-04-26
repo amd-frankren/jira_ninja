@@ -291,6 +291,33 @@ def split_prefixed_tool_name(full_name: str) -> Tuple[str, str]:
     return server_name, tool_name
 
 
+def tool_name_set(tools: List[Any]) -> set[str]:
+    names: set[str] = set()
+    for tool in tools:
+        if isinstance(tool, dict):
+            name = str(tool.get("name", "")).strip()
+        else:
+            name = str(getattr(tool, "name", "")).strip()
+        if name:
+            names.add(name)
+    return names
+
+
+def is_issue_fetch_tool(tool_name: str) -> bool:
+    t = (tool_name or "").strip().lower()
+    return t in {"get_issue", "jira_get_issue"}
+
+
+def resolve_issue_tool_name_for_server(requested_tool_name: str, server_tool_names: set[str]) -> Optional[str]:
+    if requested_tool_name in server_tool_names:
+        return requested_tool_name
+    if requested_tool_name == "get_issue" and "jira_get_issue" in server_tool_names:
+        return "jira_get_issue"
+    if requested_tool_name == "jira_get_issue" and "get_issue" in server_tool_names:
+        return "get_issue"
+    return None
+
+
 def flatten_exception_messages(exc: BaseException) -> List[str]:
     group_children = getattr(exc, "exceptions", None)
     if isinstance(group_children, tuple) and group_children:
@@ -535,6 +562,7 @@ async def run_agent_stream(
                 return
 
         chosen_tools = {k: all_tools[k] for k in selected_servers if k in all_tools}
+        server_tool_names: Dict[str, set[str]] = {k: tool_name_set(v) for k, v in all_tools.items()}
         openai_tools = to_openai_tool_schemas(chosen_tools)
         messages: List[Dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}] + state.messages[:]
 
@@ -594,6 +622,62 @@ async def run_agent_stream(
                     err = f"工具名解析失败: {e}"
                     yield sse_event("tool_error", {"tool": full_name, "error": err})
                     messages.append({"role": "tool", "tool_call_id": tool_call_id, "content": err})
+                    continue
+
+                # Special routing for issue fetch:
+                # prefer SCET first, fallback to jira_internal when SCET fails/not found.
+                if is_issue_fetch_tool(tool_name):
+                    route_plan: List[Tuple[str, str]] = []
+                    for preferred_server in ("scet", "jira_internal"):
+                        if preferred_server not in mcp_sessions:
+                            continue
+                        real_tool_name = resolve_issue_tool_name_for_server(
+                            tool_name,
+                            server_tool_names.get(preferred_server, set()),
+                        )
+                        if real_tool_name:
+                            route_plan.append((preferred_server, real_tool_name))
+
+                    # Fallback to original route when no special route is available
+                    if not route_plan:
+                        route_plan = [(server_name, tool_name)]
+
+                    tool_text = ""
+                    last_err: Optional[str] = None
+                    succeeded = False
+
+                    for idx, (route_server, route_tool) in enumerate(route_plan, start=1):
+                        yield sse_event(
+                            "tool_start",
+                            {
+                                "server": route_server,
+                                "tool": route_tool,
+                                "arguments": tool_args,
+                                "route_step": idx,
+                                "route_total": len(route_plan),
+                            },
+                        )
+                        try:
+                            route_session = mcp_sessions[route_server]
+                            result = await route_session.call_tool(route_tool, arguments=tool_args)
+                            tool_text = mcp_result_to_text(result)
+                            yield sse_event(
+                                "tool_result",
+                                {"server": route_server, "tool": route_tool, "result": tool_text},
+                            )
+                            succeeded = True
+                            break
+                        except Exception as e:
+                            last_err = str(e)
+                            yield sse_event(
+                                "tool_error",
+                                {"server": route_server, "tool": route_tool, "error": last_err},
+                            )
+
+                    if not succeeded:
+                        tool_text = f"Tool call failed: {last_err or 'unknown error'}"
+
+                    messages.append({"role": "tool", "tool_call_id": tool_call_id, "content": tool_text})
                     continue
 
                 yield sse_event("tool_start", {"server": server_name, "tool": tool_name, "arguments": tool_args})
