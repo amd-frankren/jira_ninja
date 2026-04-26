@@ -30,6 +30,7 @@ from jira_add_comment import add_comment_to_jira
 
 from jira_export_external_scet import export_issue_to_file
 from mcp_qa import ask_mcp_qa
+from ticket_owner_router import classify_and_route_ticket
 
 
 
@@ -65,6 +66,17 @@ def _exported_file_contains_target_scp(exported_file: str, targets: list[str] = 
     print(f"[info] Matched target SCP IDs: {matched_scp_ids if matched_scp_ids else 'None'}")
 
     return len(matched_scp_ids) > 0
+
+
+def _extract_scp_ids_from_file(exported_file: str) -> list[str]:
+    """Extract all SCP IDs from exported JSON raw text."""
+    try:
+        with open(exported_file, "r", encoding="utf-8") as f:
+            content = f.read().upper()
+    except Exception:
+        return []
+
+    return sorted(set(re.findall(r"SCP-\d+", content)))
 
 
 def _json_to_text(value) -> str:
@@ -313,6 +325,14 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Debug option: treat UPDATED events as CREATED events.",
     )
+    parser.add_argument(
+        "--debug-enable-owner-routing",
+        action="store_true",
+        help=(
+            "Debug option: after adding comment for NEW ticket, classify module and route owner email "
+            "by SCP ID + module via scp_member_mapping.json (default: disabled)."
+        ),
+    )
     # Parse CLI arguments
     return parser.parse_args()
 
@@ -430,6 +450,34 @@ def main() -> int:
                                 else:
                                     # Print skip message when comment posting is disabled
                                     print("[info] Skip posting internal AI comment (debug flag not enabled).")
+
+                                if args.debug_enable_owner_routing:
+                                    try:
+                                        scp_ids = _extract_scp_ids_from_file(exported_file)
+                                        print(f"[debug] Owner routing enabled. SCP IDs from ticket: {scp_ids or 'None'}")
+
+                                        route_result = classify_and_route_ticket(
+                                            ticket_text=ticket_text,
+                                            scp_ids=scp_ids,
+                                        )
+
+                                        print(f"[debug] Classified module (AI): {route_result.get('category')}")
+                                        print(f"[debug] AI routing reason: {route_result.get('reason') or '(none)'}")
+                                        print(f"[debug] Routed SCP ID: {route_result.get('routed_scp_id') or '(none)'}")
+
+                                        owners = route_result.get("owners", [])
+                                        if owners:
+                                            owner_emails = [x.get("email", "") for x in owners if x.get("email")]
+                                            print(f"[info] owner (emails): {owner_emails}")
+                                        else:
+                                            print("[warn] owner not found: no email matched for this SCP ID + AI category.")
+                                    except Exception as route_exc:
+                                        print(
+                                            f"[warn] Owner routing failed for {issue_key}: {route_exc}",
+                                            file=sys.stderr,
+                                        )
+                                else:
+                                    print("[debug] Skip owner routing (debug-enable-owner-routing not enabled).")
                             except Exception as rag_exc:
                                 # Print RAG failure warning
                                 print(

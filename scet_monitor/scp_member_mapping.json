@@ -1,0 +1,39 @@
+{
+  "SCP-835": {
+    "members": [
+      {
+        "email": "Eric.Gao@amd.com",
+        "role": "CPM",
+        "responsibilities": [
+          "Project manager"
+        ]
+      },
+      {
+        "email": "Hunk.Cui@amd.com",
+        "role": "BIOS",
+        "responsibilities": [
+          "Firmware",
+          "UEFI",
+          "APCI",
+          "OS"
+        ]
+      },
+      {
+        "email": "Josh.Ji@amd.com",
+        "role": "Hardware",
+        "responsibilities": [
+          "Hardware"
+        ]
+      },
+      {
+        "email": "Frank.Ren@amd.com",
+        "role": "BMC",
+        "responsibilities": [
+          "BMC",
+          "APML",
+          "MCTP"
+        ]
+      }
+    ]
+  }
+}
