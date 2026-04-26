@@ -50,9 +50,10 @@ def _exported_file_contains_target_scp(exported_file: str, targets: list[str] = 
 
     upper_content = content.upper()
 
+    ticket_label = os.path.splitext(os.path.basename(exported_file))[0].upper()
     # Extract all SCP IDs that appear in current ticket content (print even if no target matched)
     ticket_scp_ids = sorted(set(re.findall(r"SCP-\d+", upper_content)))
-    print(f"[info] Current ticket SCP ID in {exported_file} is: {ticket_scp_ids if ticket_scp_ids else 'None'}")
+    print(f"[info] Current ticket SCP ID in {ticket_label} is: {ticket_scp_ids if ticket_scp_ids else 'None'}")
 
     # Case-insensitive substring match against target list
     matched_scp_ids = [t.strip().upper() for t in targets if t.strip() and t.strip().upper() in upper_content]
