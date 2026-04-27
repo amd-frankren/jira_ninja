@@ -5,7 +5,7 @@ AI-driven ticket classification + owner routing helper.
 Design:
 1) Read SCP/member mapping from scp_member_mapping.json
 2) Let AI infer the best category/module from ticket text
-3) Let AI pick owner email(s) from mapped members under matched SCP ID
+3) Let AI pick owner username(s) from mapped members under matched SCP ID
 """
 
 from __future__ import annotations
@@ -94,13 +94,14 @@ def _build_member_pool(mapping: Dict[str, Any], scp_ids: List[str]) -> List[Dict
         for m in members:
             if not isinstance(m, dict):
                 continue
-            email = str(m.get("email", "")).strip()
-            if not email:
+            username = str(m.get("username", "")).strip()
+            if not username:
                 continue
             pool.append(
                 {
                     "scp_id": sid,
-                    "email": email,
+                    "username": username,
+                    "email": str(m.get("email", "")).strip(),
                     "role": str(m.get("role", "")).strip(),
                     "responsibilities": [str(x).strip() for x in m.get("responsibilities", []) if str(x).strip()],
                 }
@@ -108,19 +109,20 @@ def _build_member_pool(mapping: Dict[str, Any], scp_ids: List[str]) -> List[Dict
     return pool
 
 
-def _normalize_selected_owner(selected_owner_email: str, member_pool: List[Dict[str, Any]]) -> List[Dict[str, str]]:
-    target = (selected_owner_email or "").strip().lower()
+def _normalize_selected_owner(selected_owner_username: str, member_pool: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    target = (selected_owner_username or "").strip().lower()
     if not target:
         return []
 
     for m in member_pool:
-        email = str(m.get("email", "")).strip()
-        if not email:
+        username = str(m.get("username", "")).strip()
+        if not username:
             continue
-        if email.lower() == target:
+        if username.lower() == target:
             return [
                 {
-                    "email": email,
+                    "username": username,
+                    "email": str(m.get("email", "")).strip(),
                     "role": str(m.get("role", "")).strip(),
                     "scp_id": str(m.get("scp_id", "")).strip(),
                 }
@@ -151,16 +153,16 @@ async def _ai_classify_and_route_async(
         "You are an issue router.\n"
         "Task:\n"
         "1) Infer the most suitable module/category from ticket text.\n"
-        "2) Select ONE most relevant owner email from the provided member pool.\n"
+        "2) Select ONE most relevant owner username from the provided member pool.\n"
         "3) Prefer SCP IDs explicitly present in ticket context.\n\n"
         "Output STRICT JSON only with keys:\n"
         "{"
         "\"category\":\"...\","
         "\"matched_scp_id\":\"SCP-xxx or empty\","
-        "\"owner_email\":\"a@amd.com or empty string\","
+        "\"owner_username\":\"jira_username or empty string\","
         "\"reason\":\"short explanation\""
         "}\n"
-        "Return exactly one owner_email (or empty string if no suitable owner)."
+        "Return exactly one owner_username (or empty string if no suitable owner)."
     )
 
     user_payload = {
@@ -181,14 +183,14 @@ async def _ai_classify_and_route_async(
 
     text = completion.choices[0].message.content or ""
     parsed = _parse_json_text(text) or {}
-    owner_email = str(parsed.get("owner_email", "")).strip()
+    owner_username = str(parsed.get("owner_username", "")).strip()
 
-    if not owner_email:
-        owner_emails = parsed.get("owner_emails", [])
-        if isinstance(owner_emails, list) and owner_emails:
-            owner_email = str(owner_emails[0]).strip()
+    if not owner_username:
+        owner_usernames = parsed.get("owner_usernames", [])
+        if isinstance(owner_usernames, list) and owner_usernames:
+            owner_username = str(owner_usernames[0]).strip()
 
-    owners = _normalize_selected_owner(owner_email, member_pool)
+    owners = _normalize_selected_owner(owner_username, member_pool)
 
     matched_scp_id = str(parsed.get("matched_scp_id", "")).strip()
     if not matched_scp_id and owners:

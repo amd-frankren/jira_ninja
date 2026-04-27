@@ -11,6 +11,11 @@ python main.py --interval 60 --since-minutes 0 --debug-skip-target-scp-check --d
 python main.py --interval 60 --since-minutes 60 --debug-skip-target-scp-check --debug-enable-add-comment
 
 
+final:
+
+python main.py --interval 60 --since-minutes 60 --debug-enable-add-comment --debug-enable-owner-routing --debug-enable-assign-and-notify
+
+
 """
 
 import argparse
@@ -26,7 +31,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from jira_scet_monitor import JiraScetMonitor
 from jira_add_comment import add_comment_to_jira
-
+from jira_assign_and_notify import assign_ticket_and_notify
 
 from jira_export_external_scet import export_issue_to_file
 from mcp_qa import ask_mcp_qa
@@ -329,8 +334,16 @@ def parse_args() -> argparse.Namespace:
         "--debug-enable-owner-routing",
         action="store_true",
         help=(
-            "Debug option: after adding comment for NEW ticket, classify module and route owner email "
+            "Debug option: after adding comment for NEW ticket, classify module and route owner username "
             "by SCP ID + module via scp_member_mapping.json (default: disabled)."
+        ),
+    )
+    parser.add_argument(
+        "--debug-enable-assign-and-notify",
+        action="store_true",
+        help=(
+            "Debug option: after routing owner for NEW ticket, call jira_assign_and_notify "
+            "to assign ticket to routed username and add notify comment (default: disabled; CPM defaults to egao)."
         ),
     )
     # Parse CLI arguments
@@ -451,7 +464,7 @@ def main() -> int:
                                     # Print skip message when comment posting is disabled
                                     print("[info] Skip posting internal AI comment (debug flag not enabled).")
 
-                                if args.debug_enable_owner_routing:
+                                if args.debug_enable_owner_routing or args.debug_enable_assign_and_notify:
                                     try:
                                         scp_ids = _extract_scp_ids_from_file(exported_file)
                                         print(f"[debug] Owner routing enabled. SCP IDs from ticket: {scp_ids or 'None'}")
@@ -466,18 +479,57 @@ def main() -> int:
                                         print(f"[debug] Routed SCP ID: {route_result.get('routed_scp_id') or '(none)'}")
 
                                         owners = route_result.get("owners", [])
-                                        if owners:
-                                            owner_emails = [x.get("email", "") for x in owners if x.get("email")]
-                                            print(f"[info] owner (emails): {owner_emails}")
+                                        owner_usernames = [x.get("username", "") for x in owners if x.get("username")]
+                                        selected_owner = owner_usernames[0] if owner_usernames else ""
+
+                                        if args.debug_enable_owner_routing:
+                                            if owner_usernames:
+                                                print(f"[info] owner (usernames): {owner_usernames}")
+                                            else:
+                                                print(
+                                                    "[warn] owner not found: no username matched for this SCP ID + AI category."
+                                                )
                                         else:
-                                            print("[warn] owner not found: no email matched for this SCP ID + AI category.")
+                                            print("[debug] Skip owner routing output (debug-enable-owner-routing not enabled).")
+
+                                        if args.debug_enable_assign_and_notify:
+                                            if selected_owner:
+                                                try:
+                                                    assign_ticket_and_notify(
+                                                        ticket_url=issue_url or issue_key,
+                                                        assignee=selected_owner,
+                                                        cpm_name="egao",
+                                                    )
+                                                    print(
+                                                        f"[info] Auto assign+notify succeeded: issue={issue_key}, "
+                                                        f"assignee={selected_owner}, cpm=egao"
+                                                    )
+                                                except Exception as assign_exc:
+                                                    print(
+                                                        f"[warn] Auto assign+notify failed for {issue_key}: {assign_exc}",
+                                                        file=sys.stderr,
+                                                    )
+                                            else:
+                                                print(
+                                                    f"[warn] Skip auto assign+notify for {issue_key}: "
+                                                    "no routed owner username."
+                                                )
+                                        else:
+                                            print(
+                                                "[debug] Skip auto assign+notify "
+                                                "(debug-enable-assign-and-notify not enabled)."
+                                            )
+
                                     except Exception as route_exc:
                                         print(
                                             f"[warn] Owner routing failed for {issue_key}: {route_exc}",
                                             file=sys.stderr,
                                         )
                                 else:
-                                    print("[debug] Skip owner routing (debug-enable-owner-routing not enabled).")
+                                    print(
+                                        "[debug] Skip owner routing and auto assign+notify "
+                                        "(both debug flags not enabled)."
+                                    )
                             except Exception as rag_exc:
                                 # Print RAG failure warning
                                 print(
